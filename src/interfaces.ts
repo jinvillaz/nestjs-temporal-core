@@ -1,33 +1,62 @@
+/**
+ * @fileoverview Type definitions and interfaces for NestJS Temporal Core
+ *
+ * This file contains all TypeScript interfaces, types, and configurations
+ * used throughout the NestJS Temporal Core library. It includes configuration
+ * options, decorator interfaces, and re-exports from the Temporal SDK.
+ *
+ * @author NestJS Temporal Core
+ * @version 1.0.0
+ */
+
 import { ModuleMetadata, Type } from '@nestjs/common';
 
 // ==========================================
 // Re-export Temporal SDK Types
 // ==========================================
+
+/** Re-exported from @temporalio/common for convenience */
 export { RetryPolicy, Duration, SearchAttributes } from '@temporalio/common';
+
+/** Re-exported from @temporalio/client for convenience */
 export { ScheduleOverlapPolicy, WorkflowHandle, Client } from '@temporalio/client';
+
+/** Re-exported from @temporalio/worker for convenience */
 export { Worker } from '@temporalio/worker';
 
 // ==========================================
-// Core Connection & Configuration
+// Core Connection & Configuration Interfaces
 // ==========================================
 
+/**
+ * Configuration options for connecting to a Temporal server.
+ * Supports both local development and Temporal Cloud configurations.
+ */
 export interface ConnectionOptions {
-    /** Temporal server address (e.g., "localhost:7233") */
+    /** Temporal server address (e.g., "localhost:7233" for local, or cloud endpoint) */
     address: string;
-    /** TLS configuration */
+    /**
+     * TLS configuration for secure connections.
+     * Can be a boolean for basic TLS or detailed configuration object.
+     */
     tls?:
         | boolean
         | {
+              /** Server name for TLS verification */
               serverName?: string;
+              /** Client certificate pair for mutual TLS */
               clientCertPair?: {
+                  /** Certificate file content */
                   crt: Buffer;
+                  /** Private key file content */
                   key: Buffer;
+                  /** Certificate Authority file content */
                   ca?: Buffer;
               };
           };
-    /** API key for Temporal Cloud */
+    /** API key for Temporal Cloud authentication */
     apiKey?: string;
-    /** Additional HTTP headers */
+    /** Additional HTTP headers sent with requests */
     metadata?: Record<string, string>;
 }
 
@@ -87,6 +116,77 @@ export interface TemporalAsyncOptions extends Pick<ModuleMetadata, 'imports'> {
     useFactory?: (...args: unknown[]) => Promise<TemporalOptions> | TemporalOptions;
     inject?: (string | symbol | Type<unknown>)[];
     isGlobal?: boolean;
+}
+
+// ==========================================
+// Module-Specific Configuration Interfaces
+// ==========================================
+
+/**
+ * Client connection options used internally by the client module.
+ * Simplified version of ConnectionOptions for internal usage.
+ */
+export interface ClientConnectionOptions {
+    /** Temporal server address */
+    address: string;
+    /** TLS configuration */
+    tls?: unknown;
+    /** HTTP metadata headers */
+    metadata?: Record<string, string>;
+    /** API key for authentication */
+    apiKey?: string;
+    /** Temporal namespace */
+    namespace?: string;
+}
+
+/**
+ * Worker module configuration options.
+ * Defines all options available for configuring a Temporal worker.
+ */
+export interface WorkerModuleOptions {
+    /** Connection configuration */
+    connection?: {
+        address?: string;
+        namespace?: string;
+        tls?: boolean | object;
+        apiKey?: string;
+        metadata?: Record<string, string>;
+    };
+    /** Task queue name for the worker */
+    taskQueue?: string;
+    /** Path to workflow files */
+    workflowsPath?: string;
+    /** Pre-bundled workflow definitions */
+    workflowBundle?: unknown;
+    /** Array of activity classes to register */
+    activityClasses?: Array<unknown>;
+    /** Auto-start the worker on module initialization */
+    autoStart?: boolean;
+    /** Auto-restart the worker on failure */
+    autoRestart?: boolean;
+    /** Allow worker initialization failure without crashing */
+    allowWorkerFailure?: boolean;
+    /** Additional worker creation options */
+    workerOptions?: WorkerCreateOptions;
+    /** Enable logging for the worker */
+    enableLogger?: boolean;
+    /** Log level for worker operations */
+    logLevel?: LogLevel;
+}
+
+/**
+ * Global logger configuration interface.
+ * Extends the base LoggerConfig with additional global settings.
+ */
+export interface GlobalLoggerConfig extends LoggerConfig {
+    /** Application name prefix for all logs */
+    appName?: string;
+    /** Custom log formatter function */
+    formatter?: (level: string, message: string, context: string, timestamp: string) => string;
+    /** Enable logging to file */
+    logToFile?: boolean;
+    /** File path for log output */
+    logFilePath?: string;
 }
 
 // ==========================================

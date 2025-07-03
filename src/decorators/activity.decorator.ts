@@ -62,31 +62,3 @@ export const ActivityMethod = (nameOrOptions?: string | ActivityMethodOptions): 
         }
     };
 };
-
-/**
- * Utility function to check if a class is marked as an Activity
- */
-export function isActivity(target: object): boolean {
-    return Reflect.hasMetadata(TEMPORAL_ACTIVITY, target);
-}
-
-/**
- * Utility function to get activity metadata from a class
- */
-export function getActivityMetadata(target: object): ActivityOptions | undefined {
-    return Reflect.getMetadata(TEMPORAL_ACTIVITY, target);
-}
-
-/**
- * Utility function to check if a method is marked as an Activity method
- */
-export function isActivityMethod(target: object): boolean {
-    return Reflect.hasMetadata(TEMPORAL_ACTIVITY_METHOD, target);
-}
-
-/**
- * Utility function to get activity method metadata from a method
- */
-export function getActivityMethodMetadata(target: object): ActivityMethodOptions | undefined {
-    return Reflect.getMetadata(TEMPORAL_ACTIVITY_METHOD, target);
-}

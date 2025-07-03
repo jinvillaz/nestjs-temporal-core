@@ -1,3 +1,14 @@
+/**
+ * @fileoverview Main Temporal Module for NestJS Integration
+ *
+ * This module provides the core Temporal.io integration for NestJS applications.
+ * It handles client connection, worker management, activity discovery, and
+ * scheduling functionality in a unified, configurable module.
+ *
+ * @author NestJS Temporal Core
+ * @version 1.0.0
+ */
+
 import { DynamicModule, Module, Provider } from '@nestjs/common';
 import { DiscoveryModule } from '@nestjs/core';
 import { TemporalService } from './temporal.service';
@@ -8,15 +19,79 @@ import { TemporalWorkerModule } from './worker';
 import { TemporalDiscoveryService, TemporalScheduleManagerService } from './discovery';
 import { TemporalLoggerManager } from './utils/logger';
 
+/**
+ * Main Temporal module for NestJS applications.
+ *
+ * This module provides:
+ * - Temporal client connection management
+ * - Worker creation and lifecycle management
+ * - Activity and workflow discovery
+ * - Schedule management
+ * - Comprehensive logging and error handling
+ *
+ * @example
+ * ```typescript
+ * // Basic usage
+ * @Module({
+ *   imports: [
+ *     TemporalModule.register({
+ *       connection: {
+ *         address: 'localhost:7233',
+ *         namespace: 'default'
+ *       },
+ *       taskQueue: 'my-task-queue'
+ *     })
+ *   ]
+ * })
+ * export class AppModule {}
+ *
+ * // Async configuration
+ * @Module({
+ *   imports: [
+ *     TemporalModule.registerAsync({
+ *       useFactory: async (configService: ConfigService) => ({
+ *         connection: {
+ *           address: configService.get('TEMPORAL_ADDRESS'),
+ *           namespace: configService.get('TEMPORAL_NAMESPACE')
+ *         }
+ *       }),
+ *       inject: [ConfigService]
+ *     })
+ *   ]
+ * })
+ * export class AppModule {}
+ * ```
+ */
 @Module({})
 export class TemporalModule {
+    /**
+     * Register the Temporal module with synchronous configuration.
+     *
+     * @param options - Temporal configuration options
+     * @returns Dynamic module configuration
+     *
+     * @example
+     * ```typescript
+     * TemporalModule.register({
+     *   connection: {
+     *     address: 'localhost:7233',
+     *     namespace: 'default'
+     *   },
+     *   taskQueue: 'my-task-queue',
+     *   worker: {
+     *     workflowsPath: './src/workflows',
+     *     activityClasses: [MyActivity]
+     *   }
+     * })
+     * ```
+     */
     static register(options: TemporalOptions): DynamicModule {
         this.validateOptions(options);
 
         const imports: DynamicModule[] = [];
         const providers: Provider[] = [];
 
-        // Always include client module
+        // Always include client module for Temporal operations
         imports.push(TemporalClientModule.register(options));
 
         // Include worker module only if worker configuration is provided

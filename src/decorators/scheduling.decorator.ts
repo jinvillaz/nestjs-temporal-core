@@ -1,6 +1,7 @@
 import { SetMetadata } from '@nestjs/common';
 import { TEMPORAL_SCHEDULED_WORKFLOW } from '../constants';
 import { CronOptions, IntervalOptions, ScheduledOptions } from '../interfaces';
+import { isValidCronExpression, isValidIntervalExpression } from '../utils';
 
 /**
  * Marks a workflow method as scheduled
@@ -137,42 +138,3 @@ export const Interval = (interval: string, options: IntervalOptions): MethodDeco
         interval,
     });
 };
-
-// ==========================================
-// Helper Functions
-// ==========================================
-
-/**
- * Basic cron expression validation
- * Checks for proper format: 5 or 6 fields separated by spaces
- */
-function isValidCronExpression(cron: string): boolean {
-    if (!cron || typeof cron !== 'string') {
-        return false;
-    }
-
-    const parts = cron.trim().split(/\s+/);
-
-    // Support both 5-field (minute hour day month weekday) and 6-field (second minute hour day month weekday) format
-    if (parts.length !== 5 && parts.length !== 6) {
-        return false;
-    }
-
-    // Basic validation - each part should not be empty
-    return parts.every((part) => part.length > 0 && part !== '');
-}
-
-/**
- * Basic interval expression validation
- * Checks for format like: 1s, 5m, 2h, 1d
- */
-function isValidIntervalExpression(interval: string): boolean {
-    if (!interval || typeof interval !== 'string') {
-        return false;
-    }
-
-    // Match patterns like: 1s, 5m, 2h, 1d, 30s, etc.
-    // Also support ms (milliseconds) for very short intervals
-    const intervalPattern = /^\d+(ms|[smhd])$/;
-    return intervalPattern.test(interval.trim());
-}

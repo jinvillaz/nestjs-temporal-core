@@ -1,6 +1,5 @@
 import { createParamDecorator, ExecutionContext } from '@nestjs/common';
 import { WORKFLOW_PARAMS_METADATA } from '../constants';
-import { WorkflowParameterMetadata } from '../interfaces';
 
 /**
  * Extracts workflow parameters
@@ -40,21 +39,7 @@ export const WorkflowParam = createParamDecorator(
     },
 );
 
-// Internal decorator implementation for metadata storage
-export function WorkflowParamDecorator(index?: number): ParameterDecorator {
-    return (target: object, propertyKey: string | symbol | undefined, parameterIndex: number) => {
-        if (!propertyKey) return;
-
-        const existingParams: WorkflowParameterMetadata[] =
-            Reflect.getMetadata(WORKFLOW_PARAMS_METADATA, target, propertyKey) || [];
-        existingParams[parameterIndex] = {
-            type: 'param',
-            index: index !== undefined ? index : parameterIndex,
-            extractAll: index === undefined,
-        };
-        Reflect.defineMetadata(WORKFLOW_PARAMS_METADATA, existingParams, target, propertyKey);
-    };
-}
+// WorkflowContext, WorkflowId, RunId, and TaskQueue decorators
 
 /**
  * Extracts workflow execution context
@@ -185,14 +170,3 @@ export const TaskQueue = (): ParameterDecorator => {
         Reflect.defineMetadata(WORKFLOW_PARAMS_METADATA, existingParams, target, propertyKey);
     };
 };
-
-/**
- * Utility function to get parameter metadata for a method
- * Used internally by the framework to understand how to inject parameters
- */
-export function getParameterMetadata(
-    target: object,
-    propertyKey: string | symbol,
-): WorkflowParameterMetadata[] {
-    return Reflect.getMetadata(WORKFLOW_PARAMS_METADATA, target, propertyKey) || [];
-}

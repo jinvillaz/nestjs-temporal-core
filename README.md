@@ -16,21 +16,43 @@ NestJS Temporal Core brings Temporal's durable execution to NestJS with familiar
 
 ## 🚀 Key Features
 
-- **🎯 NestJS-Native** - Familiar patterns: `@Activity`, `@Cron`, `@Interval`
+- **🎯 NestJS-Native** - Familiar patterns: `@Activity`, `@Cron`, `@Interval`, `@Scheduled`
 - **🔍 Auto-Discovery** - Automatically finds and registers activities and schedules
-- **📅 Declarative Scheduling** - Built-in cron and interval scheduling that just works
+- **📅 Declarative Scheduling** - Built-in cron and interval scheduling with validation
 - **🔄 Unified Service** - Single `TemporalService` for all operations
 - **⚙️ Flexible Setup** - Client-only, worker-only, or unified deployments
 - **🏥 Health Monitoring** - Comprehensive status monitoring and health checks
 - **🔧 Production Ready** - TLS, connection management, graceful shutdowns
 - **📊 Modular Architecture** - Individual modules for specific needs
-- **📝 Configurable Logging** - Fine-grained control over log levels and output
+- **📝 Configurable Logging** - Fine-grained control with `TemporalLogger`
 - **🔐 Enterprise Ready** - Temporal Cloud support with TLS and API keys
+- **🛠️ Developer Experience** - Rich TypeScript support with comprehensive utilities
+- **⚡ Performance Optimized** - Efficient metadata handling and caching
 
 ## 📦 Installation
 
 ```bash
 npm install nestjs-temporal-core @temporalio/client @temporalio/worker @temporalio/workflow
+```
+
+## 🏗️ Architecture
+
+NestJS Temporal Core is built with a modular architecture:
+
+```text
+nestjs-temporal-core/
+├── src/
+│   ├── decorators/          # Activity, workflow, and scheduling decorators
+│   ├── client/              # Temporal client management
+│   ├── worker/              # Worker lifecycle and management
+│   ├── activity/            # Activity discovery and execution
+│   ├── schedules/           # Schedule management
+│   ├── discovery/           # Auto-discovery services
+│   ├── utils/               # Utilities (validation, metadata, logging)
+│   ├── constants.ts         # Predefined constants and expressions
+│   ├── interfaces.ts        # TypeScript interfaces and types
+│   ├── temporal.module.ts   # Main module
+│   └── temporal.service.ts  # Unified service
 ```
 
 ## 🚀 Quick Start
@@ -122,7 +144,13 @@ export async function processEmailWorkflow(
 ```typescript
 // services/scheduled.service.ts
 import { Injectable } from '@nestjs/common';
-import { Scheduled, Cron, Interval, CRON_EXPRESSIONS } from 'nestjs-temporal-core';
+import { 
+  Scheduled, 
+  Cron, 
+  Interval, 
+  CRON_EXPRESSIONS,
+  INTERVAL_EXPRESSIONS 
+} from 'nestjs-temporal-core';
 
 @Injectable()
 export class ScheduledService {
@@ -139,15 +167,17 @@ export class ScheduledService {
   }
 
   @Cron(CRON_EXPRESSIONS.WEEKLY_MONDAY_9AM, {
-    scheduleId: 'weekly-cleanup'
+    scheduleId: 'weekly-cleanup',
+    description: 'Weekly system cleanup'
   })
   async performWeeklyCleanup(): Promise<void> {
     console.log('Performing weekly cleanup...');
     // Your cleanup logic
   }
 
-  @Interval('5m', {
-    scheduleId: 'health-check'
+  @Interval(INTERVAL_EXPRESSIONS.EVERY_5_MINUTES, {
+    scheduleId: 'health-check',
+    description: 'System health monitoring'
   })
   async performHealthCheck(): Promise<void> {
     console.log('Performing health check...');
@@ -156,7 +186,46 @@ export class ScheduledService {
 }
 ```
 
-### 5. Use in Services
+### 5. Parameter Injection in Workflows
+
+```typescript
+// workflows/order.workflow.ts
+import { Injectable } from '@nestjs/common';
+import { 
+  WorkflowParam, 
+  WorkflowContext, 
+  WorkflowId, 
+  RunId,
+  TaskQueue 
+} from 'nestjs-temporal-core';
+
+@Injectable()
+export class OrderWorkflowController {
+  
+  async processOrder(
+    @WorkflowParam(0) orderId: string,
+    @WorkflowParam(1) customerData: any,
+    @WorkflowId() workflowId: string,
+    @WorkflowContext() context: any
+  ): Promise<void> {
+    console.log(`Processing order ${orderId} in workflow ${workflowId}`);
+    // Your workflow logic
+  }
+
+  @Signal('updateOrder')
+  async updateOrder(@WorkflowParam() updateData: any): Promise<void> {
+    // Handle order update signal
+  }
+
+  @Query('getOrderStatus')
+  getOrderStatus(@RunId() runId: string): string {
+    // Return current order status
+    return 'processing';
+  }
+}
+```
+
+### 6. Use in Services
 
 ```typescript
 // services/order.service.ts
@@ -191,6 +260,106 @@ export class OrderService {
   async getOrderStatus(orderId: string) {
     const status = await this.temporal.queryWorkflow(`order-${orderId}`, 'getStatus');
     return status;
+  }
+}
+```
+
+## 🛠️ Utilities and Constants
+
+NestJS Temporal Core provides comprehensive utilities and predefined constants for common use cases:
+
+### Predefined Constants
+
+```typescript
+import { 
+  CRON_EXPRESSIONS, 
+  INTERVAL_EXPRESSIONS, 
+  TIMEOUTS,
+  RETRY_POLICIES 
+} from 'nestjs-temporal-core';
+
+// Cron expressions
+console.log(CRON_EXPRESSIONS.DAILY_8AM);        // '0 8 * * *'
+console.log(CRON_EXPRESSIONS.WEEKLY_MONDAY_9AM); // '0 9 * * 1'
+console.log(CRON_EXPRESSIONS.MONTHLY_FIRST);     // '0 0 1 * *'
+
+// Interval expressions
+console.log(INTERVAL_EXPRESSIONS.EVERY_5_MINUTES); // '5m'
+console.log(INTERVAL_EXPRESSIONS.EVERY_HOUR);      // '1h'
+console.log(INTERVAL_EXPRESSIONS.DAILY);           // '24h'
+
+// Timeout values
+console.log(TIMEOUTS.ACTIVITY_SHORT);    // '1m'
+console.log(TIMEOUTS.WORKFLOW_MEDIUM);   // '24h'
+console.log(TIMEOUTS.CONNECTION_TIMEOUT); // '10s'
+
+// Retry policies
+console.log(RETRY_POLICIES.QUICK.maximumAttempts); // 3
+console.log(RETRY_POLICIES.STANDARD.backoffCoefficient); // 2.0
+```
+
+### Validation Utilities
+
+```typescript
+import { 
+  isValidCronExpression, 
+  isValidIntervalExpression 
+} from 'nestjs-temporal-core';
+
+// Validate cron expressions
+console.log(isValidCronExpression('0 8 * * *')); // true
+console.log(isValidCronExpression('invalid'));   // false
+
+// Validate interval expressions
+console.log(isValidIntervalExpression('5m'));    // true
+console.log(isValidIntervalExpression('2h'));    // true
+console.log(isValidIntervalExpression('bad'));   // false
+```
+
+### Metadata Utilities
+
+```typescript
+import { 
+  isActivity,
+  getActivityMetadata,
+  isActivityMethod,
+  getActivityMethodMetadata,
+  getParameterMetadata 
+} from 'nestjs-temporal-core';
+
+// Check if a class is marked as an Activity
+@Activity({ taskQueue: 'my-queue' })
+class MyActivity {}
+
+console.log(isActivity(MyActivity)); // true
+const metadata = getActivityMetadata(MyActivity);
+console.log(metadata.taskQueue); // 'my-queue'
+
+// Check method metadata
+const methodMetadata = getActivityMethodMetadata(MyActivity.prototype.myMethod);
+```
+
+### Logging Configuration
+
+```typescript
+import { TemporalLogger, TemporalLoggerManager } from 'nestjs-temporal-core';
+
+// Configure logging
+const logger = TemporalLoggerManager.getInstance();
+logger.configure({
+  enableLogger: true,
+  logLevel: 'info',
+  appName: 'My Temporal App'
+});
+
+// Use in your services
+@Injectable()
+export class MyService {
+  private readonly logger = new TemporalLogger(MyService.name);
+
+  async doSomething() {
+    this.logger.info('Starting operation');
+    this.logger.error('Something went wrong', { context: 'additional data' });
   }
 }
 ```
@@ -650,29 +819,67 @@ TemporalModule.register({
 
 ## 📚 API Reference
 
-### Decorators
+### Core Decorators
 
-- `@Activity()` - Mark a class as containing activities
-- `@ActivityMethod(options?)` - Define an activity method
-- `@Scheduled(options)` - Schedule a workflow with full options
+#### Activity Decorators
+- `@Activity(options?)` - Mark a class as containing Temporal activities
+- `@ActivityMethod(nameOrOptions?)` - Define an activity method with optional configuration
+
+#### Scheduling Decorators
+- `@Scheduled(options)` - Schedule a workflow with comprehensive options
 - `@Cron(expression, options?)` - Schedule using cron expression
-- `@Interval(interval, options?)` - Schedule using interval
+- `@Interval(interval, options?)` - Schedule using interval expression
 
-### Services
+#### Workflow Decorators
+- `@Signal(nameOrOptions?)` - Mark a method as a signal handler
+- `@Query(nameOrOptions?)` - Mark a method as a query handler
 
-- `TemporalService` - Main service for all operations
-- `TemporalClientService` - Client-only operations
-- `TemporalActivityService` - Activity management
-- `TemporalSchedulesService` - Schedule management
-- `TemporalWorkerManagerService` - Worker lifecycle
+#### Parameter Injection Decorators
+- `@WorkflowParam(index?)` - Extract workflow parameters
+- `@WorkflowContext()` - Inject workflow execution context
+- `@WorkflowId()` - Inject workflow ID
+- `@RunId()` - Inject run ID
+- `@TaskQueue()` - Inject task queue name
 
-### Constants
+### Core Services
 
-- `CRON_EXPRESSIONS` - Common cron patterns
-- `INTERVAL_EXPRESSIONS` - Common interval patterns
-- `WORKER_PRESETS` - Environment-specific worker configs
-- `RETRY_POLICIES` - Common retry patterns
-- `TIMEOUTS` - Common timeout values
+- `TemporalService` - Main unified service for all Temporal operations
+- `TemporalClientService` - Client-only operations (starting workflows, signals, queries)
+- `TemporalActivityService` - Activity discovery and management
+- `TemporalSchedulesService` - Schedule creation and management
+- `TemporalWorkerManagerService` - Worker lifecycle and health monitoring
+
+### Utility Functions
+
+#### Validation
+- `isValidCronExpression(cron: string): boolean` - Validate cron format
+- `isValidIntervalExpression(interval: string): boolean` - Validate interval format
+
+#### Metadata
+- `isActivity(target: object): boolean` - Check if class is an activity
+- `getActivityMetadata(target: object)` - Get activity metadata
+- `isActivityMethod(target: object): boolean` - Check if method is activity method
+- `getActivityMethodMetadata(target: object)` - Get activity method metadata
+- `getParameterMetadata(target: object, propertyKey: string | symbol)` - Get parameter metadata
+
+#### Logging
+- `TemporalLogger` - Enhanced logger with context support
+- `TemporalLoggerManager` - Global logger configuration
+
+### Predefined Constants
+
+#### Schedule Expressions
+- `CRON_EXPRESSIONS` - Common cron patterns (DAILY_8AM, WEEKLY_MONDAY_9AM, etc.)
+- `INTERVAL_EXPRESSIONS` - Common interval patterns (EVERY_5_MINUTES, EVERY_HOUR, etc.)
+
+#### Configuration Presets
+- `TIMEOUTS` - Common timeout values for different operation types
+- `RETRY_POLICIES` - Predefined retry policies (QUICK, STANDARD, AGGRESSIVE)
+
+#### Module Tokens
+- `TEMPORAL_MODULE_OPTIONS` - Main module configuration token
+- `TEMPORAL_CLIENT` - Client instance injection token
+- `TEMPORAL_CONNECTION` - Connection instance injection token
 
 ## 🤝 Contributing
 
