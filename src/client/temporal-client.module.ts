@@ -1,18 +1,15 @@
 import { DynamicModule, Global, Module, Provider } from '@nestjs/common';
 import { Client, Connection } from '@temporalio/client';
-import { TemporalAsyncOptions, TemporalOptions, TemporalOptionsFactory } from '../interfaces';
+import {
+    TemporalAsyncOptions,
+    TemporalOptions,
+    TemporalOptionsFactory,
+    ClientConnectionOptions,
+} from '../interfaces';
 import { DEFAULT_NAMESPACE, ERRORS, TEMPORAL_CLIENT, TEMPORAL_MODULE_OPTIONS } from '../constants';
 import { TemporalClientService } from './temporal-client.service';
 import { TemporalScheduleService } from './temporal-schedule.service';
 import { createLogger, TemporalLogger } from '../utils/logger';
-
-interface ClientConnectionOptions {
-    address: string;
-    tls?: unknown;
-    metadata?: Record<string, string>;
-    apiKey?: string;
-    namespace?: string;
-}
 
 /**
  * Streamlined Temporal Client Module

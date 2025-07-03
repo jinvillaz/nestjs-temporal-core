@@ -1,86 +1,140 @@
 import 'reflect-metadata';
+
 /**
- * NestJS Temporal Core - Complete Temporal.io Integration for NestJS
+ * @fileoverview NestJS Temporal Core - Complete Temporal.io Integration for NestJS
  *
- * Streamlined and simplified Temporal integration with:
+ * This is the main entry point for the NestJS Temporal Core library, providing
+ * a comprehensive integration between NestJS and Temporal.io workflow engine.
+ *
+ * Key Features:
  * - Auto-discovery of activities and scheduled workflows
  * - Declarative scheduling with @Cron and @Interval decorators
  * - Comprehensive client and worker management
  * - Production-ready health monitoring and error handling
+ * - Rich TypeScript support with utilities and validation
+ * - Modular architecture for flexible deployments
+ *
+ * @author NestJS Temporal Core
+ * @version 1.0.0
+ * @see {@link https://github.com/temporal-community/nestjs-temporal-core} for documentation
  */
+
+// ==========================================
+// Core Module and Service
+// ==========================================
+
+/** Main Temporal module for unified integration */
+export { TemporalModule } from './temporal.module';
+
+/** Unified service providing all Temporal functionality */
+export { TemporalService } from './temporal.service';
 
 // ==========================================
 // Client Components
 // ==========================================
-export { TemporalClientModule, TemporalClientService, TemporalScheduleService } from './client';
+
+/** Temporal client module for workflow operations */
+export { TemporalClientModule } from './client/temporal-client.module';
+
+/** Service for Temporal client operations (start workflows, signals, queries) */
+export { TemporalClientService } from './client/temporal-client.service';
+
+/** Service for schedule operations */
+export { TemporalScheduleService } from './client/temporal-schedule.service';
 
 // ==========================================
 // Worker Components
 // ==========================================
-export {
-    TemporalWorkerModule,
-    TemporalWorkerManagerService,
-    TemporalMetadataAccessor,
-} from './worker';
+
+/** Worker module for activity execution */
+export { TemporalWorkerModule } from './worker/temporal-worker.module';
+
+/** Service for worker lifecycle management */
+export { TemporalWorkerManagerService } from './worker/temporal-worker-manager.service';
+
+/** Metadata accessor for worker configuration */
+export { TemporalMetadataAccessor } from './worker/temporal-metadata.accessor';
 
 // ==========================================
 // Activity Components
 // ==========================================
-export { TemporalActivityModule, TemporalActivityService } from './activity';
+
+/** Activity module for activity discovery and management */
+export { TemporalActivityModule } from './activity/temporal-activity.module';
+
+/** Service for activity operations */
+export { TemporalActivityService } from './activity/temporal-activity.service';
 
 // ==========================================
 // Schedule Components
 // ==========================================
-export { TemporalSchedulesModule, TemporalSchedulesService } from './schedules';
+
+/** Schedules module for schedule management */
+export { TemporalSchedulesModule } from './schedules/temporal-schedules.module';
+
+/** Service for schedule operations */
+export { TemporalSchedulesService } from './schedules/temporal-schedules.service';
 
 // ==========================================
 // Discovery Services
 // ==========================================
-export { TemporalDiscoveryService, TemporalScheduleManagerService } from './discovery';
+
+/** Service for automatic discovery of activities and workflows */
+export { TemporalDiscoveryService } from './discovery/temporal-discovery.service';
+
+/** Service for schedule discovery and management */
+export { TemporalScheduleManagerService } from './discovery/temporal-schedule-manager.service';
 
 // ==========================================
-// Logging Utilities
+// Utilities and Helpers
 // ==========================================
+
+/** All utility functions (validation, metadata, logging) */
 export * from './utils';
 
 // ==========================================
-// All Decorators
+// Decorators
 // ==========================================
+
+/** All decorators for activities, workflows, and scheduling */
 export * from './decorators';
 
 // ==========================================
-// All Interfaces and Types
+// Type Definitions and Interfaces
 // ==========================================
+
+/** All TypeScript interfaces and type definitions */
 export * from './interfaces';
 
 // ==========================================
-// Constants and Presets
+// Constants and Predefined Values
 // ==========================================
+
+/** Essential constants and predefined values */
 export {
-    // Default values
+    // Default configuration values
     DEFAULT_NAMESPACE,
     DEFAULT_TASK_QUEUE,
+    DEFAULT_CONNECTION_TIMEOUT_MS,
 
-    // Metadata keys
+    // Metadata keys for decorators
     TEMPORAL_ACTIVITY,
     TEMPORAL_ACTIVITY_METHOD,
     TEMPORAL_SIGNAL_METHOD,
     TEMPORAL_QUERY_METHOD,
     TEMPORAL_SCHEDULED_WORKFLOW,
+    WORKFLOW_PARAMS_METADATA,
 
-    // Injection tokens
+    // Dependency injection tokens
     TEMPORAL_CLIENT,
     TEMPORAL_MODULE_OPTIONS,
+    TEMPORAL_CONNECTION,
 
-    // Presets and expressions
+    // Predefined expressions and values
     CRON_EXPRESSIONS,
     INTERVAL_EXPRESSIONS,
-    WORKER_PRESETS,
-    RETRY_POLICIES,
     TIMEOUTS,
-
-    // Error messages
-    ERRORS,
+    RETRY_POLICIES,
 } from './constants';
 
 // ==========================================

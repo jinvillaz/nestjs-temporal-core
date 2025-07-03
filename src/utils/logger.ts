@@ -1,19 +1,9 @@
 import { Injectable, Logger, Scope } from '@nestjs/common';
-import { LogLevel, LoggerConfig } from '../interfaces';
+import { LogLevel, LoggerConfig, GlobalLoggerConfig } from '../interfaces';
 
 /**
  * Centralized logger configuration
  */
-interface GlobalLoggerConfig extends LoggerConfig {
-    /** Application name prefix for all logs */
-    appName?: string;
-    /** Custom log formatter */
-    formatter?: (level: string, message: string, context: string, timestamp: string) => string;
-    /** Log to file */
-    logToFile?: boolean;
-    /** File path for logs */
-    logFilePath?: string;
-}
 
 /**
  * Singleton class to manage global logger configuration

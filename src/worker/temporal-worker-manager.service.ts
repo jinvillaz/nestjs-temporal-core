@@ -9,29 +9,13 @@ import { DiscoveryService } from '@nestjs/core';
 import { NativeConnection, Worker } from '@temporalio/worker';
 import { TemporalMetadataAccessor } from './temporal-metadata.accessor';
 import { DEFAULT_NAMESPACE, ERRORS, TEMPORAL_MODULE_OPTIONS, WORKER_PRESETS } from '../constants';
-import { ActivityMethodHandler, WorkerCreateOptions, WorkerStatus, LogLevel } from '../interfaces';
+import {
+    ActivityMethodHandler,
+    WorkerCreateOptions,
+    WorkerStatus,
+    WorkerModuleOptions,
+} from '../interfaces';
 import { createLogger, TemporalLogger } from '../utils/logger';
-
-// Worker-specific options interface to properly type the injected options
-interface WorkerModuleOptions {
-    connection?: {
-        address?: string;
-        namespace?: string;
-        tls?: boolean | object;
-        apiKey?: string;
-        metadata?: Record<string, string>;
-    };
-    taskQueue?: string;
-    workflowsPath?: string;
-    workflowBundle?: unknown;
-    activityClasses?: Array<unknown>;
-    autoStart?: boolean;
-    autoRestart?: boolean;
-    allowWorkerFailure?: boolean;
-    workerOptions?: WorkerCreateOptions;
-    enableLogger?: boolean;
-    logLevel?: LogLevel;
-}
 
 @Injectable()
 export class TemporalWorkerManagerService
