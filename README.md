@@ -14,6 +14,20 @@ NestJS Temporal Core brings Temporal's durable execution to NestJS with familiar
 
 🔗 **[Complete Example Project](https://github.com/harsh-simform/nestjs-temporal-core-example)** - Check out our full working example repository to see NestJS Temporal Core in action with real-world use cases, configuration examples, and best practices.
 
+## 🏁 Getting Started: Recommendations
+
+Welcome to NestJS Temporal Core! Here are some quick recommendations to help you get started smoothly:
+
+- **Choose Your Workflow Style:** You can implement workflows as plain exported functions (recommended for most use cases) or as injectable classes with decorators for advanced scenarios. See the comparison below.
+- **Parameter Injection:** Use `@WorkflowParam`, `@WorkflowId`, etc., only if you need advanced injection or metadata. For most workflows, plain parameters are simpler and preferred.
+- **Scheduling:** Schedules trigger workflows, not service methods. Make sure your scheduled workflow is exported and available to the worker.
+- **Signals & Queries:** Use signals to update workflow state and queries to fetch workflow status. See the expanded examples below for best practices.
+- **Keep Activities Idempotent:** Activities should be safe to retry and handle errors gracefully.
+- **Separate Concerns:** Keep workflows, activities, and schedules in separate files for clarity and maintainability.
+- **Check the Example Repo:** For real-world patterns, see [nestjs-temporal-core-example](https://github.com/harsh-simform/nestjs-temporal-core-example).
+
+---
+
 ## 🚀 Key Features
 
 - **🎯 NestJS-Native** - Familiar patterns: `@Activity`, `@Cron`, `@Interval`, `@Scheduled`
@@ -141,89 +155,100 @@ export async function processEmailWorkflow(
 
 ### 4. Schedule Workflows
 
+> **Note:** Schedules in NestJS Temporal Core trigger workflows, not service methods. The decorated method is used to define the schedule metadata, but the actual execution runs the workflow you specify.
+
 ```typescript
 // services/scheduled.service.ts
 import { Injectable } from '@nestjs/common';
 import { 
   Scheduled, 
-  Cron, 
-  Interval, 
   CRON_EXPRESSIONS,
-  INTERVAL_EXPRESSIONS 
 } from 'nestjs-temporal-core';
 
 @Injectable()
 export class ScheduledService {
-  
   @Scheduled({
     scheduleId: 'daily-report',
     cron: CRON_EXPRESSIONS.DAILY_8AM,
     description: 'Generate daily sales report',
-    taskQueue: 'reports'
+    taskQueue: 'reports',
+    workflowType: 'generateReportWorkflow', // Name of the workflow function to run
+    workflowArgs: [{ reportType: 'sales', date: new Date().toISOString() }], // Arguments passed to the workflow
   })
   async generateDailyReport(): Promise<void> {
-    console.log('Generating daily report...');
-    // Your report generation logic
-  }
-
-  @Cron(CRON_EXPRESSIONS.WEEKLY_MONDAY_9AM, {
-    scheduleId: 'weekly-cleanup',
-    description: 'Weekly system cleanup'
-  })
-  async performWeeklyCleanup(): Promise<void> {
-    console.log('Performing weekly cleanup...');
-    // Your cleanup logic
-  }
-
-  @Interval(INTERVAL_EXPRESSIONS.EVERY_5_MINUTES, {
-    scheduleId: 'health-check',
-    description: 'System health monitoring'
-  })
-  async performHealthCheck(): Promise<void> {
-    console.log('Performing health check...');
-    // Your health check logic
+    // This method is NOT executed directly. Instead, the schedule triggers the workflow specified above.
   }
 }
 ```
 
+- The `@Scheduled` decorator registers a schedule with Temporal.
+- The `workflowType` property specifies the workflow function to run (must be exported and available to the worker).
+- The `workflowArgs` property allows you to pass arguments to the workflow when the schedule triggers.
+
+> **Best Practice:** Keep your scheduled workflow logic in a dedicated workflow file, and use the schedule only to trigger it with the desired arguments.
+
 ### 5. Parameter Injection in Workflows
+
+You can use parameter decorators to inject workflow metadata and context. This is most useful for advanced scenarios, such as handling signals and queries in a class-based workflow.
+
+#### Comprehensive Example: Handling Signals and Workflow State
 
 ```typescript
 // workflows/order.workflow.ts
 import { Injectable } from '@nestjs/common';
-import { 
-  WorkflowParam, 
-  WorkflowContext, 
-  WorkflowId, 
+import {
+  WorkflowParam,
+  WorkflowContext,
+  WorkflowId,
   RunId,
-  TaskQueue 
+  TaskQueue,
+  Signal,
+  Query
 } from 'nestjs-temporal-core';
 
 @Injectable()
 export class OrderWorkflowController {
-  
+  private updateData: any = null; // Store signal data in workflow state
+  private status: string = 'processing';
+
   async processOrder(
     @WorkflowParam(0) orderId: string,
     @WorkflowParam(1) customerData: any,
     @WorkflowId() workflowId: string,
     @WorkflowContext() context: any
   ): Promise<void> {
-    console.log(`Processing order ${orderId} in workflow ${workflowId}`);
-    // Your workflow logic
+    // Main workflow logic
+    // Wait for an update signal (example: polling or event-driven)
+    while (!this.updateData) {
+      // ...wait or yield...
+      // In real Temporal workflows, use condition() or similar for waiting
+    }
+    // Use updateData in your logic
+    // ...
+    this.status = 'completed';
   }
 
   @Signal('updateOrder')
   async updateOrder(@WorkflowParam() updateData: any): Promise<void> {
     // Handle order update signal
+    this.updateData = updateData; // Store for use in processOrder
+    this.status = 'updated';
   }
 
   @Query('getOrderStatus')
   getOrderStatus(@RunId() runId: string): string {
     // Return current order status
-    return 'processing';
+    return this.status;
   }
 }
 ```
+
+- **Signal Handling:** Use a class property to persist signal data (`updateData`) so it can be accessed by the main workflow logic.
+- **Best Practice:** Always store signal data in workflow state (class property or closure variable) to ensure it is available after workflow replay.
+- **Forwarding Data:** The main workflow function (`processOrder`) can access and use the updated data as needed.
+- **Status Tracking:** Use a property like `status` to track and query workflow progress.
+
+> **Tip:** In Temporal workflows, use `condition()` or similar mechanisms to wait for signals in a non-blocking, replay-safe way.
 
 ### 6. Use in Services
 
@@ -898,3 +923,53 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 ---
 
 Built with ❤️ for the NestJS and Temporal communities
+
+## Workflow Implementation Approaches
+
+NestJS Temporal Core supports two main ways to define workflows:
+
+### 1. Function-Based Workflows (Recommended for Most Use Cases)
+- **How:** Export a plain async function from your workflow file.
+- **Benefits:**
+  - Simpler, more idiomatic Temporal style
+  - Fully compatible with Temporal's TypeScript SDK
+  - Easier to test and bundle
+- **When to Use:**
+  - Most workflows, especially if you don't need dependency injection or advanced metadata
+
+```typescript
+// workflows/email.workflow.ts
+export async function processEmailWorkflow(userId: string, emailData: { to: string; subject: string; body: string }) {
+  // ...
+}
+```
+
+### 2. Class-Based Workflows with Decorators (Advanced)
+- **How:** Use an injectable class and parameter decorators like `@WorkflowParam`, `@WorkflowId`, etc.
+- **Benefits:**
+  - Enables parameter injection (workflowId, context, etc.)
+  - Useful for advanced scenarios (e.g., dynamic metadata, dependency injection)
+  - Can organize signals/queries as class methods
+- **When to Use:**
+  - When you need to access workflow context, IDs, or inject dependencies
+  - When you want to group signals/queries with workflow logic
+
+```typescript
+@Injectable()
+export class OrderWorkflowController {
+  async processOrder(
+    @WorkflowParam(0) orderId: string,
+    @WorkflowId() workflowId: string,
+    @WorkflowContext() context: any
+  ) {
+    // ...
+  }
+}
+```
+
+#### Which Should I Use?
+- **Start with function-based workflows** for simplicity and compatibility.
+- **Use class-based workflows** only if you need advanced features like parameter injection or grouping signals/queries.
+- `@WorkflowParam` and related decorators are only needed for class-based workflows and provide access to workflow metadata or injected parameters.
+
+---
