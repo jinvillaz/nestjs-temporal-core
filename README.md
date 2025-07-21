@@ -2,6 +2,8 @@
 
 Complete NestJS integration for Temporal.io with unified service architecture, comprehensive workflow management, and enterprise-ready features.
 
+[![codecov](https://codecov.io/gh/harsh-simform/nestjs-temporal-core/branch/main/graph/badge.svg)](https://codecov.io/gh/harsh-simform/nestjs-temporal-core)
+
 ## 🚀 Features
 
 - **Unified TemporalModule** with sync and async configuration support
