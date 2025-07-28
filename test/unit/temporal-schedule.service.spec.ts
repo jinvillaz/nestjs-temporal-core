@@ -862,7 +862,6 @@ describe('TemporalScheduleService', () => {
 
             const serviceWithoutSchedule = new TemporalScheduleService(
                 mockClientWithoutSchedule as any,
-                mockOptions,
             );
 
             const result = serviceWithoutSchedule.isHealthy();
@@ -1206,7 +1205,6 @@ describe('TemporalScheduleService', () => {
 
             const serviceWithoutSchedule = new TemporalScheduleService(
                 mockClientWithoutSchedule as any,
-                mockOptions,
             );
 
             const result = serviceWithoutSchedule.getScheduleClient();
@@ -1234,7 +1232,6 @@ describe('TemporalScheduleService', () => {
 
             const serviceWithoutSchedule = new TemporalScheduleService(
                 mockClientWithoutSchedule as any,
-                mockOptions,
             );
 
             await serviceWithoutSchedule.onModuleInit();
@@ -1267,7 +1264,6 @@ describe('TemporalScheduleService', () => {
 
             const serviceWithoutSchedule = new TemporalScheduleService(
                 mockClientWithoutSchedule as any,
-                mockOptions,
             );
 
             const result = serviceWithoutSchedule.getScheduleStats();
@@ -1309,7 +1305,6 @@ describe('TemporalScheduleService', () => {
 
             const serviceWithoutSchedule = new TemporalScheduleService(
                 mockClientWithoutSchedule as any,
-                mockOptions,
             );
 
             expect(() => serviceWithoutSchedule['ensureClientInitialized']()).toThrow(
