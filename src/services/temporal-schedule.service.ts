@@ -382,7 +382,7 @@ export class TemporalScheduleService implements OnModuleInit {
     async describeSchedule(scheduleId: string): Promise<unknown> {
         this.ensureClientInitialized();
         try {
-            const handle = this.scheduleClient!.getHandle(scheduleId);
+            const handle = await this.scheduleClient!.getHandle(scheduleId);
             return await handle.describe();
         } catch (error) {
             this.logger.error(`Failed to describe schedule '${scheduleId}': ${error.message}`);
@@ -497,7 +497,7 @@ export class TemporalScheduleService implements OnModuleInit {
     ): Promise<void> {
         this.ensureClientInitialized();
         try {
-            const handle = this.scheduleClient!.getHandle(scheduleId);
+            const handle = await this.scheduleClient!.getHandle(scheduleId);
             await action(handle);
             this.logger.log(`Successfully ${operation}d schedule: ${scheduleId}`);
         } catch (error) {
