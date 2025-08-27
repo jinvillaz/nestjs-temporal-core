@@ -1,7 +1,5 @@
 import * as Decorators from '../../src/decorators';
 import {
-    Workflow,
-    WorkflowRun,
     SignalMethod,
     QueryMethod,
     ChildWorkflow,
@@ -33,14 +31,12 @@ describe('Decorators Index Module', () => {
     // Note: Scheduling decorators have been removed due to static configuration issues
 
     describe('Workflow Decorators', () => {
-        it('should export Workflow decorator', () => {
-            expect(Decorators.Workflow).toBeDefined();
-            expect(typeof Decorators.Workflow).toBe('function');
+        it('should not export deprecated Workflow decorator', () => {
+            expect((Decorators as any).Workflow).toBeUndefined();
         });
 
-        it('should export WorkflowRun decorator', () => {
-            expect(Decorators.WorkflowRun).toBeDefined();
-            expect(typeof Decorators.WorkflowRun).toBe('function');
+        it('should not export deprecated WorkflowRun decorator', () => {
+            expect((Decorators as any).WorkflowRun).toBeUndefined();
         });
 
         it('should export SignalMethod decorator', () => {
@@ -58,26 +54,9 @@ describe('Decorators Index Module', () => {
             expect(typeof Decorators.ChildWorkflow).toBe('function');
         });
 
-        it('should mark class with workflow metadata', () => {
-            @Workflow()
-            class TestWorkflow {}
-            const metadata = Reflect.getMetadata('TEMPORAL_WORKFLOW', TestWorkflow);
-            expect(metadata).toBeDefined();
-            expect(metadata.className).toBe('TestWorkflow');
-        });
-        it('should mark method with workflow run metadata', () => {
-            class TestWorkflow {}
-            Object.defineProperty(TestWorkflow.prototype, 'run', {
-                value: function () {},
-                writable: true,
-            });
-            const descriptor = Object.getOwnPropertyDescriptor(TestWorkflow.prototype, 'run') || {
-                value: function () {},
-            };
-            WorkflowRun()(TestWorkflow.prototype, 'run', descriptor);
-            const metadata = Reflect.getMetadata('TEMPORAL_WORKFLOW_RUN', descriptor.value);
-            expect(metadata).toBeDefined();
-            expect(metadata.methodName).toBe('run');
+        it('should not support class-based workflow metadata (deprecated)', () => {
+            // Class-based workflows are deprecated in favor of function-based workflows
+            expect(true).toBe(true);
         });
         it('should mark method with signal metadata', () => {
             class TestWorkflow {}

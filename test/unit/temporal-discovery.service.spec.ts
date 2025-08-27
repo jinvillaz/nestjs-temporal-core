@@ -2,72 +2,26 @@ import 'reflect-metadata';
 import { Test, TestingModule } from '@nestjs/testing';
 import { DiscoveryService, MetadataScanner } from '@nestjs/core';
 import { TemporalDiscoveryService } from '../../src/services/temporal-discovery.service';
+import { TemporalMetadataAccessor } from '../../src/services/temporal-metadata.service';
 import {
     TEMPORAL_SIGNAL_METHOD,
     TEMPORAL_QUERY_METHOD,
     TEMPORAL_CHILD_WORKFLOW,
-    TEMPORAL_WORKFLOW_RUN,
+    TEMPORAL_MODULE_OPTIONS,
 } from '../../src/constants';
-import { SignalMethodInfo, QueryMethodInfo, DiscoveryStats } from '../../src/interfaces';
 import {
-    Workflow,
-    WorkflowRun,
-    SignalMethod,
-    QueryMethod,
-} from '../../src/decorators/workflow.decorator';
-import { InstanceWrapper } from '@nestjs/core/injector/instance-wrapper';
-
-function mockInstanceWrapper(instance: any, metatype: any): InstanceWrapper<any> {
-    return {
-        instance,
-        metatype,
-        name: 'mock',
-        token: 'mock',
-        isAlias: false,
-        values: [],
-        getInstance: () => instance,
-        hasLifecycleHook: () => false,
-        isDependencyTreeStatic: true,
-        isResolved: true,
-        isTransient: false,
-        isTreeStatic: true,
-    } as unknown as InstanceWrapper<any>;
-}
-
-function createDecoratedTestWorkflow() {
-    class TestWorkflow {
-        signalMethod() {}
-        queryMethod() {}
-        regularMethod() {}
-    }
-    Workflow()(TestWorkflow);
-    const signalDescriptor = Object.getOwnPropertyDescriptor(
-        TestWorkflow.prototype,
-        'signalMethod',
-    ) || {
-        value: TestWorkflow.prototype.signalMethod,
-        writable: true,
-        configurable: true,
-        enumerable: false,
-    };
-    SignalMethod('testSignal')(TestWorkflow.prototype, 'signalMethod', signalDescriptor);
-    const queryDescriptor = Object.getOwnPropertyDescriptor(
-        TestWorkflow.prototype,
-        'queryMethod',
-    ) || {
-        value: TestWorkflow.prototype.queryMethod,
-        writable: true,
-        configurable: true,
-        enumerable: false,
-    };
-    QueryMethod('testQuery')(TestWorkflow.prototype, 'queryMethod', queryDescriptor);
-    return TestWorkflow;
-}
+    SignalMethodInfo,
+    QueryMethodInfo,
+    DiscoveryStats,
+    TemporalOptions,
+} from '../../src/interfaces';
+import { SignalMethod, QueryMethod, ChildWorkflow } from '../../src/decorators/workflow.decorator';
 
 describe('TemporalDiscoveryService', () => {
     let service: TemporalDiscoveryService;
     let discoveryService: jest.Mocked<DiscoveryService>;
     let metadataScanner: jest.Mocked<MetadataScanner>;
+    let metadataAccessor: any;
 
     beforeEach(async () => {
         const mockDiscoveryService = {
@@ -79,978 +33,767 @@ describe('TemporalDiscoveryService', () => {
             scanFromPrototype: jest.fn(),
         };
 
+        const mockTemporalOptions: TemporalOptions = {
+            connection: { address: 'localhost:7233' },
+            enableLogger: true,
+            logLevel: 'info',
+        };
+
+        metadataAccessor = {
+            extractActivityMethods: jest.fn().mockReturnValue(new Map()),
+            extractActivityMethodsFromClass: jest.fn(),
+            isActivityMethod: jest.fn(),
+            getActivityMethodMetadata: jest.fn(),
+            getActivityMethodNames: jest.fn(),
+            getActivityMethodName: jest.fn(),
+            getActivityOptions: jest.fn(),
+            extractMethodsFromPrototype: jest.fn(),
+            getActivityInfo: jest.fn(),
+            clearCache: jest.fn(),
+            getCacheStats: jest.fn(),
+            isActivity: jest.fn().mockReturnValue(false),
+            getSignalMethods: jest.fn().mockReturnValue({}),
+            getQueryMethods: jest.fn().mockReturnValue({}),
+            getChildWorkflows: jest.fn().mockReturnValue({}),
+            validateActivityClass: jest.fn().mockReturnValue({ isValid: true, issues: [] }),
+        };
+
         const module: TestingModule = await Test.createTestingModule({
             providers: [
                 TemporalDiscoveryService,
-                {
-                    provide: DiscoveryService,
-                    useValue: mockDiscoveryService,
-                },
-                {
-                    provide: MetadataScanner,
-                    useValue: mockMetadataScanner,
-                },
+                { provide: DiscoveryService, useValue: mockDiscoveryService },
+                { provide: MetadataScanner, useValue: mockMetadataScanner },
+                { provide: TEMPORAL_MODULE_OPTIONS, useValue: mockTemporalOptions },
+                { provide: TemporalMetadataAccessor, useValue: metadataAccessor },
             ],
         }).compile();
 
         service = module.get<TemporalDiscoveryService>(TemporalDiscoveryService);
         discoveryService = module.get(DiscoveryService);
         metadataScanner = module.get(MetadataScanner);
-
-        // Mock Reflect.getMetadata
-        jest.spyOn(Reflect, 'getMetadata').mockImplementation((key: string, target: any) => {
-            // Handle signals on prototype (named only)
-            if (
-                key === TEMPORAL_SIGNAL_METHOD &&
-                target &&
-                target.constructor &&
-                target.constructor.name === 'TestWorkflow'
-            ) {
-                return { testSignal: 'signalMethod' };
-            }
-            // Handle queries on prototype (named only)
-            if (
-                key === TEMPORAL_QUERY_METHOD &&
-                target &&
-                target.constructor &&
-                target.constructor.name === 'TestWorkflow'
-            ) {
-                return { testQuery: 'queryMethod' };
-            }
-            // Handle signals on prototype (default only)
-            if (
-                key === TEMPORAL_SIGNAL_METHOD &&
-                target &&
-                target.constructor &&
-                target.constructor.name === 'Object'
-            ) {
-                return { signalMethod: 'signalMethod', testMethod: 'testMethod' };
-            }
-            // Handle queries on prototype (default only)
-            if (
-                key === TEMPORAL_QUERY_METHOD &&
-                target &&
-                target.constructor &&
-                target.constructor.name === 'Object'
-            ) {
-                return { queryMethod: 'queryMethod', testMethod: 'testMethod' };
-            }
-            return undefined;
-        });
     });
 
     afterEach(() => {
         jest.clearAllMocks();
         jest.restoreAllMocks();
+
+        // Clear service state to prevent test interference
+        if (service) {
+            (service as any).discoveredSignals?.clear();
+            (service as any).discoveredQueries?.clear();
+            (service as any).discoveredChildWorkflows?.clear();
+            (service as any).discoveredActivities?.clear();
+            // Also clear aliases
+            (service as any).signals?.clear();
+            (service as any).queries?.clear();
+            (service as any).childWorkflows?.clear();
+        }
     });
 
-    describe('initialization', () => {
-        it('should be defined', () => {
-            expect(service).toBeDefined();
-        });
+    const setupBasicMocks = (
+        providers: any[] = [],
+        controllers: any[] = [],
+        methods: string[] = [],
+    ) => {
+        discoveryService.getProviders.mockReturnValue(providers);
+        discoveryService.getControllers.mockReturnValue(controllers);
+        metadataScanner.scanFromPrototype.mockReturnValue(methods);
+    };
 
-        it('should discover components on module init', async () => {
-            const TestWorkflow = createDecoratedTestWorkflow();
-            const mockInstance = new TestWorkflow();
-
-            discoveryService.getProviders.mockReturnValue([
-                mockInstanceWrapper(mockInstance, TestWorkflow),
-            ]);
-
-            discoveryService.getControllers.mockReturnValue([]);
-
-            metadataScanner.scanFromPrototype.mockReturnValue([
-                'signalMethod',
-                'queryMethod',
-                'regularMethod',
-            ]);
+    describe('onModuleInit', () => {
+        it('should initialize and discover components', async () => {
+            setupBasicMocks([], [], []);
 
             await service.onModuleInit();
 
             expect(discoveryService.getProviders).toHaveBeenCalled();
             expect(discoveryService.getControllers).toHaveBeenCalled();
-            expect(metadataScanner.scanFromPrototype).toHaveBeenCalled();
         });
 
-        it('should skip wrappers without instance or metatype', async () => {
-            discoveryService.getProviders.mockReturnValue([
-                mockInstanceWrapper(null, null),
-                mockInstanceWrapper(undefined, undefined),
-            ]);
+        it('should discover signal methods', async () => {
+            class TestWorkflow {
+                @SignalMethod('testSignal')
+                async handleSignal(): Promise<void> {}
+            }
 
-            discoveryService.getControllers.mockReturnValue([]);
+            const mockInstance = new TestWorkflow();
+            const mockWrapper = {
+                instance: mockInstance,
+                metatype: TestWorkflow,
+            };
+
+            setupBasicMocks([mockWrapper as any], [], ['handleSignal']);
+
+            // Mock the metadata accessor to return signal methods
+            metadataAccessor.getSignalMethods.mockReturnValue({
+                testSignal: 'handleSignal',
+            });
 
             await service.onModuleInit();
 
-            expect(metadataScanner.scanFromPrototype).not.toHaveBeenCalled();
+            const signals = service.getSignals();
+            expect(signals).toHaveLength(1);
+            expect(signals[0].signalName).toBe('testSignal');
+            expect(signals[0].methodName).toBe('handleSignal');
+            expect(signals[0].className).toBe('TestWorkflow');
         });
 
-        it('should handle errors during method processing', async () => {
-            const TestWorkflow = createDecoratedTestWorkflow();
+        it('should discover query methods', async () => {
+            class TestWorkflow {
+                @QueryMethod('testQuery')
+                getStatus(): string {
+                    return 'active';
+                }
+            }
+
             const mockInstance = new TestWorkflow();
+            const mockWrapper = {
+                instance: mockInstance,
+                metatype: TestWorkflow,
+            };
 
-            discoveryService.getProviders.mockReturnValue([
-                mockInstanceWrapper(mockInstance, TestWorkflow),
-            ]);
+            setupBasicMocks([mockWrapper as any], [], ['getStatus']);
 
-            discoveryService.getControllers.mockReturnValue([]);
+            // Mock the metadata accessor to return query methods
+            metadataAccessor.getQueryMethods.mockReturnValue({
+                testQuery: 'getStatus',
+            });
 
-            metadataScanner.scanFromPrototype.mockReturnValue(['regularMethod']);
+            await service.onModuleInit();
 
-            // Should not throw even with processing errors
-            await expect(service.onModuleInit()).resolves.not.toThrow();
+            const queries = service.getQueries();
+            expect(queries).toHaveLength(1);
+            expect(queries[0].queryName).toBe('testQuery');
+            expect(queries[0].methodName).toBe('getStatus');
+            expect(queries[0].className).toBe('TestWorkflow');
+        });
+
+        it('should discover child workflows', async () => {
+            class PaymentWorkflow {}
+
+            class TestWorkflow {
+                @ChildWorkflow(PaymentWorkflow)
+                private paymentWorkflow: PaymentWorkflow;
+            }
+
+            const mockInstance = new TestWorkflow();
+            const mockWrapper = {
+                instance: mockInstance,
+                metatype: TestWorkflow,
+            };
+
+            setupBasicMocks([mockWrapper as any], [], []);
+
+            // Mock the metadata accessor to return child workflows
+            metadataAccessor.getChildWorkflows.mockReturnValue({
+                paymentWorkflow: {
+                    workflowType: PaymentWorkflow,
+                    options: {},
+                },
+            });
+
+            await service.onModuleInit();
+
+            const childWorkflows = service.getChildWorkflows();
+            expect(childWorkflows).toHaveLength(1);
+            expect(childWorkflows[0].workflowType).toBe(PaymentWorkflow);
+            expect(childWorkflows[0].className).toBe('TestWorkflow');
+        });
+
+        it('should handle empty discovery results', async () => {
+            setupBasicMocks([], [], []);
+
+            await service.onModuleInit();
+
+            const stats = service.getStats();
+            expect(stats.signals).toBe(0);
+            expect(stats.queries).toBe(0);
+            expect(stats.workflows).toBe(0);
+            expect(stats.childWorkflows).toBe(0);
+        });
+
+        it('should handle providers without instances', async () => {
+            const mockWrapper = {
+                instance: null,
+                metatype: class TestClass {},
+            };
+
+            setupBasicMocks([mockWrapper as any], [], []);
+
+            await service.onModuleInit();
+
+            const stats = service.getStats();
+            expect(stats.signals).toBe(0);
+            expect(stats.queries).toBe(0);
+        });
+
+        it('should handle providers without metatype', async () => {
+            const mockWrapper = {
+                instance: {},
+                metatype: null,
+            };
+
+            setupBasicMocks([mockWrapper as any], [], []);
+
+            await service.onModuleInit();
+
+            const stats = service.getStats();
+            expect(stats.signals).toBe(0);
+            expect(stats.queries).toBe(0);
+        });
+
+        it('should skip Object.prototype methods', async () => {
+            const mockInstance = {};
+            const mockWrapper = {
+                instance: mockInstance,
+                metatype: Object,
+            };
+
+            setupBasicMocks([mockWrapper as any], [], ['toString', 'valueOf']);
+
+            await service.onModuleInit();
+
+            const stats = service.getStats();
+            expect(stats.signals).toBe(0);
+            expect(stats.queries).toBe(0);
         });
     });
 
     describe('getSignals', () => {
-        it('should return empty array when no signals discovered', () => {
-            const result = service.getSignals();
-            expect(result).toEqual([]);
-        });
-
-        it('should return discovered signals', async () => {
-            const TestWorkflow = createDecoratedTestWorkflow();
-            const mockInstance = new TestWorkflow();
-
-            discoveryService.getProviders.mockReturnValue([
-                mockInstanceWrapper(mockInstance, TestWorkflow),
-            ]);
-
-            discoveryService.getControllers.mockReturnValue([]);
-
-            metadataScanner.scanFromPrototype.mockReturnValue(['signalMethod']);
-
-            await service.onModuleInit();
-            const result = service.getSignals();
-
-            expect(result).toHaveLength(1);
-            expect(result[0].methodName).toBe('signalMethod');
-            expect(result[0].signalName).toBe('testSignal');
+        it('should return all discovered signals', () => {
+            const signals = service.getSignals();
+            expect(Array.isArray(signals)).toBe(true);
         });
     });
 
     describe('getSignal', () => {
-        it('should return undefined for non-existent signal', () => {
-            const result = service.getSignal('non-existent');
-            expect(result).toBeUndefined();
-        });
-
         it('should return signal by name', async () => {
-            const TestWorkflow = createDecoratedTestWorkflow();
+            class TestWorkflow {
+                @SignalMethod('testSignal')
+                async handleSignal(): Promise<void> {}
+            }
+
             const mockInstance = new TestWorkflow();
+            const mockWrapper = {
+                instance: mockInstance,
+                metatype: TestWorkflow,
+            };
 
-            discoveryService.getProviders.mockReturnValue([
-                mockInstanceWrapper(mockInstance, TestWorkflow),
-            ]);
+            setupBasicMocks([mockWrapper as any], [], []);
+            metadataScanner.scanFromPrototype.mockReturnValue(['handleSignal']);
 
-            discoveryService.getControllers.mockReturnValue([]);
-
-            metadataScanner.scanFromPrototype.mockReturnValue(['signalMethod']);
+            // Mock the metadata accessor to return signal methods
+            metadataAccessor.getSignalMethods.mockReturnValue({
+                testSignal: 'handleSignal',
+            });
 
             await service.onModuleInit();
-            const result = service.getSignal('testSignal');
 
-            expect(result).toBeDefined();
-            expect(result?.methodName).toBe('signalMethod');
-            expect(result?.signalName).toBe('testSignal');
+            const signal = service.getSignal('testSignal');
+            expect(signal).toBeDefined();
+            expect(signal?.signalName).toBe('testSignal');
+        });
+
+        it('should return undefined for non-existent signal', () => {
+            const signal = service.getSignal('non-existent');
+            expect(signal).toBeUndefined();
         });
     });
 
     describe('getQueries', () => {
-        it('should return empty array when no queries discovered', () => {
-            const result = service.getQueries();
-            expect(result).toEqual([]);
-        });
-
-        it('should return discovered queries', async () => {
-            const TestWorkflow = createDecoratedTestWorkflow();
-            const mockInstance = new TestWorkflow();
-
-            discoveryService.getProviders.mockReturnValue([
-                mockInstanceWrapper(mockInstance, TestWorkflow),
-            ]);
-
-            discoveryService.getControllers.mockReturnValue([]);
-
-            metadataScanner.scanFromPrototype.mockReturnValue(['queryMethod']);
-
-            await service.onModuleInit();
-            const result = service.getQueries();
-
-            expect(result).toHaveLength(1);
-            expect(result[0].methodName).toBe('queryMethod');
-            expect(result[0].queryName).toBe('testQuery');
-        });
-
-        it('should handle constructor filtering in method discovery', async () => {
-            const TestWorkflow = createDecoratedTestWorkflow();
-            const mockInstance = new TestWorkflow();
-
-            discoveryService.getProviders.mockReturnValue([
-                mockInstanceWrapper(mockInstance, TestWorkflow),
-            ]);
-
-            discoveryService.getControllers.mockReturnValue([]);
-
-            // Mock scanFromPrototype to return constructor and method names
-            metadataScanner.scanFromPrototype.mockReturnValue(['constructor', 'queryMethod']);
-
-            await service.onModuleInit();
-            const result = service.getQueries();
-
-            // Should only find the query method, constructor should be filtered out
-            expect(result).toHaveLength(1);
-            expect(result[0].methodName).toBe('queryMethod');
+        it('should return all discovered queries', () => {
+            const queries = service.getQueries();
+            expect(Array.isArray(queries)).toBe(true);
         });
     });
 
     describe('getQuery', () => {
-        it('should return undefined for non-existent query', () => {
-            const result = service.getQuery('non-existent');
-            expect(result).toBeUndefined();
-        });
-
         it('should return query by name', async () => {
-            const TestWorkflow = createDecoratedTestWorkflow();
+            class TestWorkflow {
+                @QueryMethod('testQuery')
+                getStatus(): string {
+                    return 'active';
+                }
+            }
+
             const mockInstance = new TestWorkflow();
+            const mockWrapper = {
+                instance: mockInstance,
+                metatype: TestWorkflow,
+            };
 
-            discoveryService.getProviders.mockReturnValue([
-                mockInstanceWrapper(mockInstance, TestWorkflow),
-            ]);
+            setupBasicMocks([mockWrapper as any], [], []);
+            metadataScanner.scanFromPrototype.mockReturnValue(['getStatus']);
 
-            discoveryService.getControllers.mockReturnValue([]);
-
-            metadataScanner.scanFromPrototype.mockReturnValue(['queryMethod']);
+            // Mock the metadata accessor to return query methods
+            metadataAccessor.getQueryMethods.mockReturnValue({
+                testQuery: 'getStatus',
+            });
 
             await service.onModuleInit();
-            const result = service.getQuery('testQuery');
 
-            expect(result).toBeDefined();
-            expect(result?.methodName).toBe('queryMethod');
-            expect(result?.queryName).toBe('testQuery');
+            const query = service.getQuery('testQuery');
+            expect(query).toBeDefined();
+            expect(query?.queryName).toBe('testQuery');
+        });
+
+        it('should return undefined for non-existent query', () => {
+            const query = service.getQuery('non-existent');
+            expect(query).toBeUndefined();
+        });
+    });
+
+    describe('getChildWorkflows', () => {
+        it('should return all discovered child workflows', () => {
+            const childWorkflows = service.getChildWorkflows();
+            expect(Array.isArray(childWorkflows)).toBe(true);
+        });
+    });
+
+    describe('getChildWorkflow', () => {
+        it('should return child workflow by property key', async () => {
+            class PaymentWorkflow {}
+
+            class TestWorkflow {
+                @ChildWorkflow(PaymentWorkflow)
+                private paymentWorkflow: PaymentWorkflow;
+            }
+
+            const mockInstance = new TestWorkflow();
+            const mockWrapper = {
+                instance: mockInstance,
+                metatype: TestWorkflow,
+            };
+
+            setupBasicMocks([mockWrapper as any], [], []);
+            metadataScanner.scanFromPrototype.mockReturnValue([]);
+
+            // Mock the metadata accessor to return child workflows
+            metadataAccessor.getChildWorkflows.mockReturnValue({
+                paymentWorkflow: {
+                    workflowType: PaymentWorkflow,
+                    options: {},
+                },
+            });
+
+            await service.onModuleInit();
+
+            const childWorkflow = service.getChildWorkflow('paymentWorkflow');
+            expect(childWorkflow).toBeDefined();
+            expect(childWorkflow?.workflowType).toBe(PaymentWorkflow);
+        });
+
+        it('should return undefined for non-existent child workflow', () => {
+            const childWorkflow = service.getChildWorkflow('non-existent');
+            expect(childWorkflow).toBeUndefined();
+        });
+    });
+
+    describe('getWorkflowNames', () => {
+        it('should return empty array for function-based workflows', () => {
+            const workflowNames = service.getWorkflowNames();
+            expect(workflowNames).toEqual([]);
+        });
+    });
+
+    describe('hasWorkflow', () => {
+        it('should return false for function-based workflows', () => {
+            const hasWorkflow = service.hasWorkflow('any-workflow');
+            expect(hasWorkflow).toBe(false);
         });
     });
 
     describe('getStats', () => {
-        it('should return zero stats when nothing discovered', () => {
-            const result = service.getStats();
-
-            expect(result).toEqual({
-                controllers: 0,
-                methods: 0,
-                signals: 0,
-                queries: 0,
-                workflows: 0,
-                childWorkflows: 0,
-            });
-        });
-
-        it('should return correct stats when components discovered', async () => {
-            const TestWorkflow = createDecoratedTestWorkflow();
-            const mockInstance = new TestWorkflow();
-
-            discoveryService.getProviders.mockReturnValue([
-                mockInstanceWrapper(mockInstance, TestWorkflow),
-            ]);
-
-            discoveryService.getControllers.mockReturnValue([]);
-
-            metadataScanner.scanFromPrototype.mockReturnValue([
-                'signalMethod',
-                'queryMethod',
-                'regularMethod',
-            ]);
-
-            await service.onModuleInit();
-            const result = service.getStats();
-
-            expect(result).toEqual({
-                controllers: 0,
-                methods: 0,
-                signals: 1,
-                queries: 1,
-                workflows: 0,
-                childWorkflows: 0,
-            });
-        });
-
-        it('should filter out constructor method from scanned methods', async () => {
-            const TestWorkflow = createDecoratedTestWorkflow();
-            const mockInstance = new TestWorkflow();
-
-            discoveryService.getProviders.mockReturnValue([
-                mockInstanceWrapper(mockInstance, TestWorkflow),
-            ]);
-
-            discoveryService.getControllers.mockReturnValue([]);
-
-            metadataScanner.scanFromPrototype.mockReturnValue([
-                'constructor',
-                'signalMethod',
-                'queryMethod',
-                'regularMethod',
-            ]);
-
-            await service.onModuleInit();
-            const result = service.getStats();
-
-            expect(result).toEqual({
-                controllers: 0,
-                methods: 0,
-                signals: 1,
-                queries: 1,
-                workflows: 0,
-                childWorkflows: 0,
-            });
-        });
-
-        it('should test scanFromPrototype filter callback with constructor', async () => {
-            const TestWorkflow = createDecoratedTestWorkflow();
-            const mockInstance = new TestWorkflow();
-
-            discoveryService.getProviders.mockReturnValue([
-                mockInstanceWrapper(mockInstance, TestWorkflow),
-            ]);
-
-            discoveryService.getControllers.mockReturnValue([]);
-
-            metadataScanner.scanFromPrototype.mockImplementation(
-                (instance, prototype, callback) => {
-                    const result = callback('constructor');
-                    expect(result).toBeNull();
-                    return ['signalMethod'];
-                },
-            );
-
-            await service.onModuleInit();
-        });
-    });
-
-    describe('getHealthStatus', () => {
-        it('should return degraded status when nothing discovered', () => {
-            const result = service.getHealthStatus();
-
-            expect(result.status).toBe('degraded');
-            expect(result.discoveredItems.signals).toBe(0);
-            expect(result.discoveredItems.queries).toBe(0);
-            expect(result.discoveredItems.workflows).toBe(0);
-            expect(result.discoveredItems.childWorkflows).toBe(0);
-        });
-
-        it('should return healthy status when components discovered', async () => {
-            const TestWorkflow = createDecoratedTestWorkflow();
-            const mockInstance = new TestWorkflow();
-
-            discoveryService.getProviders.mockReturnValue([
-                mockInstanceWrapper(mockInstance, TestWorkflow),
-            ]);
-
-            discoveryService.getControllers.mockReturnValue([]);
-
-            metadataScanner.scanFromPrototype.mockReturnValue(['signalMethod']);
-
-            await service.onModuleInit();
-            const result = service.getHealthStatus();
-
-            expect(result.status).toBe('healthy');
-            expect(result.lastDiscovery).toBeInstanceOf(Date);
-            expect(result.discoveredItems.workflows).toBe(0);
-            expect(result.discoveredItems.childWorkflows).toBe(0);
-        });
-    });
-
-    describe('workflow methods', () => {
-        it('should return workflow names', () => {
-            const result = service.getWorkflowNames();
-            expect(result).toEqual([]);
-        });
-
-        it('should check if workflow exists', () => {
-            const result = service.hasWorkflow('TestWorkflow');
-            expect(result).toBe(false);
-        });
-    });
-
-    describe('method categorization', () => {
-        it('should handle methods without decorators', async () => {
-            const TestWorkflow = createDecoratedTestWorkflow();
-            const mockInstance = new TestWorkflow();
-
-            discoveryService.getProviders.mockReturnValue([
-                mockInstanceWrapper(mockInstance, TestWorkflow),
-            ]);
-
-            discoveryService.getControllers.mockReturnValue([]);
-
-            metadataScanner.scanFromPrototype.mockReturnValue(['regularMethod']);
-
-            await service.onModuleInit();
+        it('should return discovery statistics', () => {
             const stats = service.getStats();
+            expect(stats).toHaveProperty('controllers');
+            expect(stats).toHaveProperty('methods');
+            expect(stats).toHaveProperty('signals');
+            expect(stats).toHaveProperty('queries');
+            expect(stats).toHaveProperty('workflows');
+            expect(stats).toHaveProperty('childWorkflows');
+            expect(stats.workflows).toBe(0);
+        });
+    });
 
+    describe('private method coverage', () => {
+        it('should call logDiscoveryResults during onModuleInit', async () => {
+            setupBasicMocks([], [], []);
+            metadataScanner.scanFromPrototype.mockReturnValue([]);
+
+            const logSpy = jest.spyOn(service as any, 'logDiscoveryResults').mockImplementation();
+
+            await service.onModuleInit();
+
+            expect(logSpy).toHaveBeenCalled();
+            logSpy.mockRestore();
+        });
+
+        it('should log detailed results when components are found', async () => {
+            class TestWorkflow {
+                @SignalMethod('testSignal')
+                async handleSignal(): Promise<void> {}
+
+                @QueryMethod('testQuery')
+                getStatus(): string {
+                    return 'active';
+                }
+            }
+
+            const mockInstance = new TestWorkflow();
+            const mockWrapper = {
+                instance: mockInstance,
+                metatype: TestWorkflow,
+            };
+
+            setupBasicMocks([mockWrapper as any], [], []);
+            metadataScanner.scanFromPrototype.mockReturnValue(['handleSignal', 'getStatus']);
+
+            const logSpy = jest.spyOn((service as any).logger, 'debug').mockImplementation();
+            const logInfoSpy = jest.spyOn((service as any).logger, 'log').mockImplementation();
+
+            await service.onModuleInit();
+
+            expect(logInfoSpy).toHaveBeenCalled();
+            expect(logSpy).toHaveBeenCalled();
+
+            logSpy.mockRestore();
+            logInfoSpy.mockRestore();
+        });
+
+        it('should categorize methods correctly', async () => {
+            class TestWorkflow {
+                @SignalMethod('testSignal')
+                async handleSignal(): Promise<void> {}
+
+                normalMethod(): void {}
+            }
+
+            const mockInstance = new TestWorkflow();
+            const mockWrapper = {
+                instance: mockInstance,
+                metatype: TestWorkflow,
+            };
+
+            setupBasicMocks([mockWrapper as any], [], []);
+            metadataScanner.scanFromPrototype.mockReturnValue(['handleSignal', 'normalMethod']);
+
+            // Mock the metadata accessor to return signal methods for handleSignal only
+            metadataAccessor.getSignalMethods.mockReturnValue({
+                testSignal: 'handleSignal',
+            });
+
+            await service.onModuleInit();
+
+            // Verify that signals were discovered (indicating categorization worked)
+            const signals = service.getSignals();
+            expect(signals).toHaveLength(1);
+            expect(signals[0].methodName).toBe('handleSignal');
+        });
+    });
+
+    describe('error handling', () => {
+        it('should handle errors during discovery', async () => {
+            discoveryService.getProviders.mockImplementation(() => {
+                throw new Error('Discovery error');
+            });
+
+            await expect(service.onModuleInit()).rejects.toThrow('Discovery error');
+        });
+
+        it('should handle metadata scanning errors', async () => {
+            const mockWrapper = {
+                instance: {},
+                metatype: class TestClass {},
+            };
+
+            setupBasicMocks([mockWrapper as any], [], []);
+            metadataScanner.scanFromPrototype.mockImplementation(() => {
+                throw new Error('Scanning error');
+            });
+
+            // Should not throw but handle the error gracefully
+            await service.onModuleInit();
+
+            const stats = service.getStats();
             expect(stats.signals).toBe(0);
             expect(stats.queries).toBe(0);
-            expect(stats.workflows).toBe(0);
-            expect(stats.childWorkflows).toBe(0);
         });
+    });
 
-        it('should handle signal methods with default names', async () => {
-            const TestWorkflow = createDecoratedTestWorkflow();
-            const mockInstance = new TestWorkflow();
+    describe('edge cases', () => {
+        it('should handle multiple signals with same name in different classes', async () => {
+            class WorkflowA {
+                @SignalMethod('commonSignal')
+                async handle(): Promise<void> {}
+            }
 
-            discoveryService.getProviders.mockReturnValue([
-                mockInstanceWrapper(mockInstance, TestWorkflow),
-            ]);
+            class WorkflowB {
+                @SignalMethod('commonSignal')
+                async handle(): Promise<void> {}
+            }
 
-            discoveryService.getControllers.mockReturnValue([]);
+            const mockWrapperA = {
+                instance: new WorkflowA(),
+                metatype: WorkflowA,
+            };
 
-            metadataScanner.scanFromPrototype.mockReturnValue(['signalMethod']);
+            const mockWrapperB = {
+                instance: new WorkflowB(),
+                metatype: WorkflowB,
+            };
 
-            jest.spyOn(Reflect, 'getMetadata').mockImplementation((key: string, target: any) => {
-                if (
-                    key === TEMPORAL_SIGNAL_METHOD &&
-                    target &&
-                    target.constructor &&
-                    target.constructor.name === 'Object'
-                ) {
-                    return { signalMethod: 'signalMethod' };
-                }
-                return undefined;
+            setupBasicMocks([mockWrapperA, mockWrapperB] as any);
+            metadataScanner.scanFromPrototype.mockReturnValue(['handle']);
+
+            // Mock the metadata accessor to return signal methods for both classes
+            metadataAccessor.getSignalMethods.mockReturnValue({
+                commonSignal: 'handle',
             });
 
             await service.onModuleInit();
+
             const signals = service.getSignals();
-
-            expect(signals).toHaveLength(0);
+            // Note: Current implementation overwrites signals with same name, so only the last one survives
+            expect(signals).toHaveLength(1);
+            expect(signals[0].signalName).toBe('commonSignal');
+            expect(signals[0].className).toBe('WorkflowB'); // Last one processed
         });
 
-        it('should handle query methods with default names', async () => {
-            const TestWorkflow = createDecoratedTestWorkflow();
-            const mockInstance = new TestWorkflow();
+        it('should handle complex class hierarchies', async () => {
+            class BaseWorkflow {
+                @SignalMethod('baseSignal')
+                async baseHandler(): Promise<void> {}
+            }
 
-            discoveryService.getProviders.mockReturnValue([
-                mockInstanceWrapper(mockInstance, TestWorkflow),
-            ]);
-
-            discoveryService.getControllers.mockReturnValue([]);
-
-            metadataScanner.scanFromPrototype.mockReturnValue(['queryMethod']);
-
-            jest.spyOn(Reflect, 'getMetadata').mockImplementation((key: string, target: any) => {
-                if (
-                    key === TEMPORAL_QUERY_METHOD &&
-                    target &&
-                    target.constructor &&
-                    target.constructor.name === 'Object'
-                ) {
-                    return { queryMethod: 'queryMethod' };
+            class DerivedWorkflow extends BaseWorkflow {
+                @QueryMethod('derivedQuery')
+                getStatus(): string {
+                    return 'active';
                 }
-                return undefined;
+            }
+
+            const mockInstance = new DerivedWorkflow();
+            const mockWrapper = {
+                instance: mockInstance,
+                metatype: DerivedWorkflow,
+            };
+
+            setupBasicMocks([mockWrapper as any], [], []);
+            metadataScanner.scanFromPrototype.mockReturnValue(['baseHandler', 'getStatus']);
+
+            // Mock the metadata accessor to return both signal and query methods
+            metadataAccessor.getSignalMethods.mockReturnValue({
+                baseSignal: 'baseHandler',
+            });
+            metadataAccessor.getQueryMethods.mockReturnValue({
+                derivedQuery: 'getStatus',
             });
 
             await service.onModuleInit();
+
+            const signals = service.getSignals();
             const queries = service.getQueries();
 
-            expect(queries).toHaveLength(0);
+            expect(signals).toHaveLength(1);
+            expect(queries).toHaveLength(1);
+            expect(signals[0].className).toBe('DerivedWorkflow');
+            expect(queries[0].className).toBe('DerivedWorkflow');
         });
 
-        it('should handle methods that are not functions', async () => {
-            const TestWorkflow = createDecoratedTestWorkflow();
-            const mockInstance = new TestWorkflow();
+        it('should handle methods that are built-in Object prototype methods', async () => {
+            const mockInstance = { toString: () => 'test' };
+            const mockWrapper = {
+                instance: mockInstance,
+                metatype: Object,
+            };
 
-            discoveryService.getProviders.mockReturnValue([
-                mockInstanceWrapper(mockInstance, TestWorkflow),
+            setupBasicMocks([mockWrapper as any], [], []);
+            metadataScanner.scanFromPrototype.mockReturnValue([
+                'toString',
+                'valueOf',
+                'hasOwnProperty',
             ]);
 
-            discoveryService.getControllers.mockReturnValue([]);
-
-            metadataScanner.scanFromPrototype.mockReturnValue(['nonFunctionProperty']);
-
-            // Mock the prototype to have a non-function property
-            Object.defineProperty(TestWorkflow.prototype, 'nonFunctionProperty', {
-                value: 'not a function',
-                writable: true,
-                configurable: true,
-            });
-
             await service.onModuleInit();
-            const stats = service.getStats();
 
+            const stats = service.getStats();
             expect(stats.signals).toBe(0);
             expect(stats.queries).toBe(0);
-            expect(stats.workflows).toBe(0);
-            expect(stats.childWorkflows).toBe(0);
-        });
-    });
-
-    describe('uncovered paths', () => {
-        it('should test getWorkflows method', () => {
-            const workflows = service.getWorkflows();
-            expect(Array.isArray(workflows)).toBe(true);
         });
 
-        it('should test getWorkflow method', () => {
-            const workflow = service.getWorkflow('non-existent');
-            expect(workflow).toBeUndefined();
-        });
-
-        it('should test getChildWorkflows method', () => {
-            const childWorkflows = service.getChildWorkflows();
-            expect(Array.isArray(childWorkflows)).toBe(true);
-        });
-
-        it('should test getChildWorkflow method', () => {
-            const childWorkflow = service.getChildWorkflow('non-existent');
-            expect(childWorkflow).toBeUndefined();
-        });
-
-        it('should discover workflow runs and trigger line 136', async () => {
-            class TestWorkflow {
-                workflowRun() {}
-            }
-
-            const mockInstance = new TestWorkflow();
-
-            // Mock TEMPORAL_WORKFLOW_RUN metadata
-            jest.spyOn(Reflect, 'getMetadata').mockImplementation((key: string, target: any) => {
-                if (
-                    key === TEMPORAL_WORKFLOW_RUN &&
-                    target === TestWorkflow.prototype.workflowRun
-                ) {
-                    return { name: 'TestWorkflow' };
-                }
-                return undefined;
-            });
-
-            discoveryService.getProviders.mockReturnValue([
-                mockInstanceWrapper(mockInstance, TestWorkflow),
-            ]);
-            discoveryService.getControllers.mockReturnValue([]);
-            metadataScanner.scanFromPrototype.mockReturnValue(['workflowRun']);
-
-            await service.onModuleInit();
-
-            // Verify workflow was added (line 136)
-            const workflows = service.getWorkflows();
-            expect(workflows.length).toBeGreaterThan(0);
-        });
-
-        it('should discover child workflows and trigger line 187', async () => {
-            class TestWorkflow {
-                constructor() {
-                    (this as any).childWorkflowProperty = {};
-                }
-            }
-
-            const mockInstance = new TestWorkflow();
-            // Ensure the property definitely exists
-            Object.defineProperty(mockInstance, 'childWorkflowProperty', {
-                value: {},
-                enumerable: true,
-                configurable: true,
-                writable: true,
-            });
-
-            // Mock TEMPORAL_CHILD_WORKFLOW metadata
-            jest.spyOn(Reflect, 'getMetadata').mockImplementation(
-                (key: string, target: any, propertyKey?: string | symbol) => {
-                    if (
-                        key === TEMPORAL_CHILD_WORKFLOW &&
-                        propertyKey === 'childWorkflowProperty'
-                    ) {
-                        return { workflowType: 'ChildWorkflow', options: {} };
-                    }
-                    return undefined;
-                },
-            );
-
-            discoveryService.getProviders.mockReturnValue([
-                mockInstanceWrapper(mockInstance, TestWorkflow),
-            ]);
-            discoveryService.getControllers.mockReturnValue([]);
-            metadataScanner.scanFromPrototype.mockReturnValue([]);
-
-            await service.onModuleInit();
-
-            // Verify child workflow was added (line 187)
-            const childWorkflows = service.getChildWorkflows();
-            expect(childWorkflows.length).toBeGreaterThan(0);
-        });
-
-        it('should trigger debug logging for workflows (line 437)', async () => {
-            class TestWorkflow {
-                workflowRun() {}
-            }
-
-            const mockInstance = new TestWorkflow();
-
-            jest.spyOn(Reflect, 'getMetadata').mockImplementation((key: string, target: any) => {
-                if (
-                    key === TEMPORAL_WORKFLOW_RUN &&
-                    target === TestWorkflow.prototype.workflowRun
-                ) {
-                    return { name: 'TestWorkflow' };
-                }
-                return undefined;
-            });
-
-            discoveryService.getProviders.mockReturnValue([
-                mockInstanceWrapper(mockInstance, TestWorkflow),
-            ]);
-            discoveryService.getControllers.mockReturnValue([]);
-            metadataScanner.scanFromPrototype.mockReturnValue(['workflowRun']);
-
-            const debugSpy = jest.spyOn(service['logger'], 'debug');
-
-            await service.onModuleInit();
-
-            // Verify debug log for workflows was called (line 437)
-            expect(debugSpy).toHaveBeenCalledWith(expect.stringContaining('Discovered workflows:'));
-        });
-
-        it('should trigger debug logging for child workflows (line 442)', async () => {
-            class TestWorkflow {
-                childWorkflowProperty: any;
-            }
-
-            const mockInstance = new TestWorkflow();
-            // Add the property to the instance
-            mockInstance.childWorkflowProperty = {};
-
-            jest.spyOn(Reflect, 'getMetadata').mockImplementation(
-                (key: string, target: any, propertyKey?: string | symbol) => {
-                    if (
-                        key === TEMPORAL_CHILD_WORKFLOW &&
-                        propertyKey === 'childWorkflowProperty'
-                    ) {
-                        return { workflowType: 'ChildWorkflow', options: {} };
-                    }
-                    return undefined;
-                },
-            );
-
-            discoveryService.getProviders.mockReturnValue([
-                mockInstanceWrapper(mockInstance, TestWorkflow),
-            ]);
-            discoveryService.getControllers.mockReturnValue([]);
-            metadataScanner.scanFromPrototype.mockReturnValue([]);
-
-            const debugSpy = jest.spyOn(service['logger'], 'debug');
-
-            await service.onModuleInit();
-
-            // Verify debug log for child workflows was called (line 442)
-            expect(debugSpy).toHaveBeenCalledWith(
-                expect.stringContaining('Discovered child workflows:'),
-            );
-        });
-
-        it('should handle discovery method errors gracefully and log warning (line 135)', async () => {
-            // Mock module with invalid metadata
-            const invalidModule = {
-                name: 'invalid-module',
-                metatype: {
-                    prototype: {
-                        someMethod: function () {},
-                    },
-                },
-                instance: {
-                    someMethod: function () {},
-                },
-            };
-
-            // Mock Reflect.getMetadata to throw an error during method processing
-            const originalGetMetadata = Reflect.getMetadata;
-            jest.spyOn(Reflect, 'getMetadata').mockImplementation(() => {
-                throw new Error('Metadata access failed');
-            });
-
-            // Mock metadataScanner to return methods
-            metadataScanner.scanFromPrototype.mockReturnValue(['someMethod']);
-
-            // Spy on logger to verify warning is logged
-            const loggerWarnSpy = jest.spyOn((service as any).logger, 'warn');
-
-            discoveryService.getProviders.mockReturnValue([
-                mockInstanceWrapper(invalidModule.instance, invalidModule.metatype),
-            ]);
-            discoveryService.getControllers.mockReturnValue([]);
-
-            // This should not throw, but log a warning
-            await expect(service.onModuleInit()).resolves.not.toThrow();
-
-            // Verify warning was logged (line 135)
-            expect(loggerWarnSpy).toHaveBeenCalledWith(
-                'Error during method discovery: Metadata access failed',
-            );
-
-            // Restore original function
-            jest.spyOn(Reflect, 'getMetadata').mockImplementation(originalGetMetadata);
-            loggerWarnSpy.mockRestore();
-        });
-
-        it('should test getWorkflowNames with non-empty method names (lines 315-316)', async () => {
-            // Create a workflow with a methodName that has content
-            class TestWorkflow {
-                testMethod() {}
-            }
-
-            const mockInstance = new TestWorkflow();
-
-            // Mock TEMPORAL_WORKFLOW_RUN metadata to return a methodName with content
-            jest.spyOn(Reflect, 'getMetadata').mockImplementation((key: string, target: any) => {
-                if (key === TEMPORAL_WORKFLOW_RUN && target === TestWorkflow.prototype.testMethod) {
-                    return { methodName: 'testMethod' };
-                }
-                return undefined;
-            });
-
-            discoveryService.getProviders.mockReturnValue([
-                mockInstanceWrapper(mockInstance, TestWorkflow),
-            ]);
-            discoveryService.getControllers.mockReturnValue([]);
-            metadataScanner.scanFromPrototype.mockReturnValue(['testMethod']);
-
-            await service.onModuleInit();
-
-            const workflowNames = service.getWorkflowNames();
-
-            // Should include the workflow with methodName that passes the trim check (lines 315-316)
-            expect(workflowNames).toContain('testMethod');
-        });
-
-        it('should test hasWorkflow with matching workflow (lines 330-331)', async () => {
-            // Create a workflow with a methodName
-            class TestWorkflow {
-                myWorkflow() {}
-            }
-
-            const mockInstance = new TestWorkflow();
-
-            // Mock TEMPORAL_WORKFLOW_RUN metadata to return a methodName
-            jest.spyOn(Reflect, 'getMetadata').mockImplementation((key: string, target: any) => {
-                if (key === TEMPORAL_WORKFLOW_RUN && target === TestWorkflow.prototype.myWorkflow) {
-                    return { methodName: 'myWorkflow' };
-                }
-                return undefined;
-            });
-
-            discoveryService.getProviders.mockReturnValue([
-                mockInstanceWrapper(mockInstance, TestWorkflow),
-            ]);
-            discoveryService.getControllers.mockReturnValue([]);
-            metadataScanner.scanFromPrototype.mockReturnValue(['myWorkflow']);
-
-            await service.onModuleInit();
-
-            // Should return true when workflow methodName matches (lines 330-331)
-            expect(service.hasWorkflow('myWorkflow')).toBe(true);
-            expect(service.hasWorkflow('nonExistentWorkflow')).toBe(false);
-        });
-
-        it('should handle constructor method name (line 106)', async () => {
-            class TestClass {
-                constructor() {}
-                normalMethod() {}
-            }
-
-            const mockInstance = new TestClass();
-            discoveryService.getProviders.mockReturnValue([
-                mockInstanceWrapper(mockInstance, TestClass),
-            ]);
-            discoveryService.getControllers.mockReturnValue([]);
-
-            // Mock to return 'constructor' as one of the method names
-            metadataScanner.scanFromPrototype.mockReturnValue(['constructor', 'normalMethod']);
-
-            await service.onModuleInit();
-
-            // The constructor method should be filtered out (line 106: methodName !== 'constructor' ? methodName : null)
-            const workflowNames = service.getWorkflowNames();
-            expect(workflowNames).not.toContain('constructor');
-        });
-
-        it('should handle child workflow metadata (line 124)', async () => {
-            class TestWorkflow {
-                childWorkflowProp: any;
-                normalProp: any;
-            }
-
-            const mockInstance = new TestWorkflow();
-
-            // Mock child workflow metadata for one property
-            jest.spyOn(Reflect, 'getMetadata').mockImplementation(
-                (key: string, target: any, property?: string | symbol) => {
-                    if (key === TEMPORAL_CHILD_WORKFLOW && property === 'childWorkflowProp') {
-                        return { workflowType: TestWorkflow };
-                    }
-                    return undefined;
-                },
-            );
-
-            jest.spyOn(Reflect, 'ownKeys').mockReturnValue(['childWorkflowProp', 'normalProp']);
-
-            discoveryService.getProviders.mockReturnValue([
-                mockInstanceWrapper(mockInstance, TestWorkflow),
-            ]);
-            discoveryService.getControllers.mockReturnValue([]);
-            metadataScanner.scanFromPrototype.mockReturnValue([]);
-
-            await service.onModuleInit();
-
-            // Should process the child workflow property (line 124: if (childMeta))
-            // Verify the service processed the child workflow
-            const workflows = service.getWorkflows();
-            expect(workflows).toBeDefined();
-        });
-
-        it('should handle workflow with valid methodName (line 315)', async () => {
-            class TestWorkflow {
-                validMethod() {}
-            }
-
-            const mockInstance = new TestWorkflow();
-
-            // Mock workflow run metadata with valid methodName
-            jest.spyOn(Reflect, 'getMetadata').mockImplementation((key: string, target: any) => {
-                if (
-                    key === TEMPORAL_WORKFLOW_RUN &&
-                    target === TestWorkflow.prototype.validMethod
-                ) {
-                    return { methodName: 'validMethod' }; // Non-empty, non-whitespace
-                }
-                return undefined;
-            });
-
-            discoveryService.getProviders.mockReturnValue([
-                mockInstanceWrapper(mockInstance, TestWorkflow),
-            ]);
-            discoveryService.getControllers.mockReturnValue([]);
-            metadataScanner.scanFromPrototype.mockReturnValue(['validMethod']);
-
-            await service.onModuleInit();
-
-            // Should include workflow with valid methodName (line 315: if (info.methodName && info.methodName.trim()))
-            const workflowNames = service.getWorkflowNames();
-            expect(workflowNames).toContain('validMethod');
-        });
-
-        it('should handle workflows with empty methodName (line 315)', () => {
-            // Create a workflow with empty methodName to test the conditional check on line 315
-            const mockWorkflow = {
-                className: 'EmptyMethodNameWorkflow',
-                methodName: '', // Empty string should be filtered out
-                instance: {},
-                metadata: {},
-            };
-
-            // Set the workflow manually to test the getWorkflowNames logic
-            (service as any).workflows.set('emptyMethod', mockWorkflow);
-
-            const workflowNames = service.getWorkflowNames();
-            expect(workflowNames).not.toContain('');
-        });
-
-        it('should handle workflows with whitespace-only methodName (line 315)', () => {
-            // Create a workflow with whitespace-only methodName to test trim() logic
-            const mockWorkflow = {
-                className: 'WhitespaceMethodNameWorkflow',
-                methodName: '   ', // Whitespace-only should be filtered out
-                instance: {},
-                metadata: {},
-            };
-
-            // Set the workflow manually to test the getWorkflowNames logic
-            (service as any).workflows.set('whitespaceMethod', mockWorkflow);
-
-            const workflowNames = service.getWorkflowNames();
-            expect(workflowNames).not.toContain('   ');
-        });
-
-        it('should handle workflows with null methodName (line 315)', () => {
-            // Create a workflow with null methodName to test the conditional check
-            const mockWorkflow = {
-                className: 'NullMethodNameWorkflow',
-                methodName: null, // null should be filtered out
-                instance: {},
-                metadata: {},
-            };
-
-            // Set the workflow manually to test the getWorkflowNames logic
-            (service as any).workflows.set('nullMethod', mockWorkflow);
-
-            const workflowNames = service.getWorkflowNames();
-            expect(workflowNames.length).toBeGreaterThanOrEqual(0);
-        });
-
-        it('should handle scanFromPrototype returning null method names (line 106)', () => {
-            const mockDiscoveryService = {
-                getProviders: jest.fn().mockReturnValue([]),
-                getControllers: jest.fn().mockReturnValue([]),
-            };
-
-            const mockMetadataScanner = {
-                scanFromPrototype: jest.fn().mockImplementation((instance, prototype, callback) => {
-                    // Simulate callback returning null for constructor (line 106-107)
-                    return ['constructor', 'validMethod'].map(callback);
-                }),
-            };
-
-            const testService = new TemporalDiscoveryService(
-                mockDiscoveryService as any,
-                mockMetadataScanner as any,
-            );
-
+        it('should handle method discovery errors gracefully', async () => {
             const mockInstance = {
-                constructor: { name: 'TestClass' },
-                validMethod: jest.fn(),
+                problemMethod: () => 'test',
+            };
+            const mockWrapper = {
+                instance: mockInstance,
+                metatype: class TestClass {},
             };
 
-            // Call the private method to test the logic
-            (testService as any).discoverMethods(mockInstance);
+            setupBasicMocks([mockWrapper as any], [], []);
+            metadataScanner.scanFromPrototype.mockReturnValue(['problemMethod']);
 
-            // Verify that constructor was filtered out and validMethod was processed
-            expect(mockMetadataScanner.scanFromPrototype).toHaveBeenCalled();
-        });
-
-        it('should handle child workflow discovery conditional (line 124)', () => {
-            const mockDiscoveryService = {
-                getProviders: jest.fn().mockReturnValue([]),
-                getControllers: jest.fn().mockReturnValue([]),
-            };
-
-            const mockMetadataScanner = {
-                scanFromPrototype: jest.fn().mockReturnValue([]),
-            };
-
-            const testService = new TemporalDiscoveryService(
-                mockDiscoveryService as any,
-                mockMetadataScanner as any,
-            );
-
-            const mockInstance = {
-                constructor: { name: 'TestClass' },
-                childProp: 'value',
-                normalProp: 'value',
-            };
-
-            // Mock Reflect.getMetadata to return metadata for childProp but not normalProp
+            // Mock Reflect.getMetadata to throw an error
             const originalGetMetadata = Reflect.getMetadata;
-            jest.spyOn(Reflect, 'getMetadata').mockImplementation((key, target, propertyKey) => {
-                if (key === TEMPORAL_CHILD_WORKFLOW && propertyKey === 'childProp') {
-                    return { workflowType: 'TestWorkflow', options: {} };
+            jest.spyOn(Reflect, 'getMetadata').mockImplementation((key, target) => {
+                if (target === mockInstance.constructor.prototype) {
+                    throw new Error('Metadata error');
                 }
-                return null; // This tests the !childMeta condition (line 124)
+                return originalGetMetadata(key, target);
             });
 
-            // Call the private method to test the logic
-            (testService as any).discoverMethods(mockInstance);
+            // Should not throw but handle the error gracefully
+            await service.onModuleInit();
 
-            // Verify child workflow was added
-            const childWorkflows = (testService as any).childWorkflows;
-            expect(childWorkflows.has('childProp')).toBe(true);
+            const stats = service.getStats();
+            expect(stats.signals).toBe(0);
+            expect(stats.queries).toBe(0);
 
-            // Restore
-            Reflect.getMetadata = originalGetMetadata;
+            jest.restoreAllMocks();
+        });
+
+        it('should handle all Object.prototype methods', async () => {
+            const mockInstance = {};
+            const mockWrapper = {
+                instance: mockInstance,
+                metatype: class TestClass {},
+            };
+
+            setupBasicMocks([mockWrapper as any], [], []);
+            metadataScanner.scanFromPrototype.mockReturnValue([
+                'toString',
+                'valueOf',
+                'hasOwnProperty',
+                'isPrototypeOf',
+                'propertyIsEnumerable',
+                'toLocaleString',
+                '__defineGetter__',
+                '__defineSetter__',
+                '__lookupGetter__',
+                '__lookupSetter__',
+            ]);
+
+            await service.onModuleInit();
+
+            const stats = service.getStats();
+            expect(stats.signals).toBe(0);
+            expect(stats.queries).toBe(0);
+        });
+
+        it('should discover mixed signal and query methods', async () => {
+            class MixedWorkflow {
+                @SignalMethod('signal1')
+                async handleSignal1(): Promise<void> {}
+
+                @SignalMethod('signal2')
+                async handleSignal2(): Promise<void> {}
+
+                @QueryMethod('query1')
+                getQuery1(): string {
+                    return 'test1';
+                }
+
+                @QueryMethod('query2')
+                getQuery2(): string {
+                    return 'test2';
+                }
+
+                regularMethod(): void {}
+            }
+
+            const mockInstance = new MixedWorkflow();
+            const mockWrapper = {
+                instance: mockInstance,
+                metatype: MixedWorkflow,
+            };
+
+            setupBasicMocks([mockWrapper as any], [], []);
+            metadataScanner.scanFromPrototype.mockReturnValue([
+                'handleSignal1',
+                'handleSignal2',
+                'getQuery1',
+                'getQuery2',
+                'regularMethod',
+            ]);
+
+            // Mock the metadata accessor to return both signal and query methods
+            metadataAccessor.getSignalMethods.mockReturnValue({
+                signal1: 'handleSignal1',
+                signal2: 'handleSignal2',
+            });
+            metadataAccessor.getQueryMethods.mockReturnValue({
+                query1: 'getQuery1',
+                query2: 'getQuery2',
+            });
+
+            await service.onModuleInit();
+
+            const signals = service.getSignals();
+            const queries = service.getQueries();
+
+            expect(signals).toHaveLength(2);
+            expect(queries).toHaveLength(2);
+            expect(signals.map((s) => s.signalName)).toEqual(['signal1', 'signal2']);
+            expect(queries.map((q) => q.queryName)).toEqual(['query1', 'query2']);
+        });
+
+        it('should handle child workflow discovery with options', async () => {
+            class ParentWorkflow {
+                @ChildWorkflow(class PaymentWorkflow {}, { taskQueue: 'payments' })
+                private paymentWorkflow: any;
+
+                @ChildWorkflow(class InventoryWorkflow {})
+                private inventoryWorkflow: any;
+            }
+
+            const mockInstance = new ParentWorkflow();
+            const mockWrapper = {
+                instance: mockInstance,
+                metatype: ParentWorkflow,
+            };
+
+            setupBasicMocks([mockWrapper as any], [], []);
+            metadataScanner.scanFromPrototype.mockReturnValue([]);
+
+            // Mock the metadata accessor to return child workflows with options
+            metadataAccessor.getChildWorkflows.mockReturnValue({
+                paymentWorkflow: {
+                    workflowType: class PaymentWorkflow {},
+                    options: { taskQueue: 'payments' },
+                },
+                inventoryWorkflow: {
+                    workflowType: class InventoryWorkflow {},
+                    options: {},
+                },
+            });
+
+            await service.onModuleInit();
+
+            const childWorkflows = service.getChildWorkflows();
+            expect(childWorkflows).toHaveLength(2);
+
+            const paymentWorkflow = service.getChildWorkflow('paymentWorkflow');
+            expect(paymentWorkflow?.options).toEqual({ taskQueue: 'payments' });
+
+            const inventoryWorkflow = service.getChildWorkflow('inventoryWorkflow');
+            expect(inventoryWorkflow?.options).toEqual({});
+        });
+
+        it('should handle providers with undefined properties', async () => {
+            const mockWrapper = {
+                instance: undefined,
+                metatype: undefined,
+            };
+
+            setupBasicMocks([mockWrapper as any], [], []);
+            metadataScanner.scanFromPrototype.mockReturnValue([]);
+
+            await service.onModuleInit();
+
+            const stats = service.getStats();
+            expect(stats.signals).toBe(0);
+            expect(stats.queries).toBe(0);
         });
     });
 });

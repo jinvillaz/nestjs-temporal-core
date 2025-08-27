@@ -5,12 +5,7 @@ import { TemporalClientService } from '../../src/services/temporal-client.servic
 import { TemporalScheduleService } from '../../src/services/temporal-schedule.service';
 import { TemporalDiscoveryService } from '../../src/services/temporal-discovery.service';
 import { TemporalWorkerManagerService } from '../../src/services/temporal-worker.service';
-import {
-    SystemStatus,
-    WorkerStatus,
-    DiscoveryStats,
-    ScheduleStats,
-} from '../../src/interfaces';
+import { SystemStatus, WorkerStatus, DiscoveryStats, ScheduleStats } from '../../src/interfaces';
 
 describe('TemporalHealthController', () => {
     let controller: TemporalHealthController;
@@ -80,15 +75,36 @@ describe('TemporalHealthController', () => {
             client: {
                 status: 'connected',
                 healthy: true,
+                available: true,
             },
             worker: {
                 status: 'running',
+                healthy: true,
+                available: true,
+            },
+            schedule: {
+                status: 'active',
+                healthy: true,
+                available: true,
+            },
+            activity: {
+                status: 'active',
+                healthy: true,
                 available: true,
             },
             discovery: {
                 status: 'active',
-                workflows: 4,
+                healthy: true,
+                available: true,
             },
+        },
+        isInitialized: true,
+        namespace: 'default',
+        summary: {
+            totalActivities: 5,
+            totalSchedules: 0,
+            workerRunning: true,
+            clientConnected: true,
         },
     };
 
@@ -333,8 +349,11 @@ describe('TemporalHealthController', () => {
                 status: 'healthy' as const,
                 details: mockWorkerStatus,
                 activities: {
-                    total: 2,
-                    registered: ['activity1', 'activity2'],
+                    total: jest.fn().mockReturnValue(2),
+                    registered: {
+                        activity1: jest.fn(),
+                        activity2: jest.fn(),
+                    },
                 },
             };
 
@@ -419,7 +438,8 @@ describe('TemporalHealthController', () => {
                 ],
             }).compile();
 
-            const controllerWithoutWorker = moduleWithoutWorker.get<TemporalHealthController>(TemporalHealthController);
+            const controllerWithoutWorker =
+                moduleWithoutWorker.get<TemporalHealthController>(TemporalHealthController);
 
             const mockWorkerHealth = {
                 status: 'not_available' as const,
@@ -441,6 +461,7 @@ describe('TemporalHealthController', () => {
             const mockHealthStatus = {
                 status: 'healthy' as const,
                 discoveredItems: mockDiscoveryStats,
+                isComplete: true,
                 lastDiscovery: new Date(),
             };
 
@@ -470,6 +491,7 @@ describe('TemporalHealthController', () => {
             const mockHealthStatus = {
                 status: 'degraded' as const,
                 discoveredItems: inactiveStats,
+                isComplete: false,
                 lastDiscovery: null,
             };
 

@@ -1,7 +1,9 @@
-import { SetMetadata, Type } from '@nestjs/common';
+import { Type } from '@nestjs/common';
 import { TEMPORAL_ACTIVITY, TEMPORAL_ACTIVITY_METHOD } from '../constants';
 import { ActivityMethodOptions, ActivityOptions } from '../interfaces';
-import { proxyActivities } from '@temporalio/workflow';
+import { createLogger } from '../utils/logger';
+
+const logger = createLogger('ActivityDecorators');
 
 /**
  * Activity decorator for marking classes as Temporal activities
@@ -21,13 +23,37 @@ import { proxyActivities } from '@temporalio/workflow';
  */
 export const Activity = (options?: ActivityOptions): ClassDecorator => {
     return (target: unknown) => {
+        const targetClass = target as Function;
+        const activityName = options?.name || targetClass.name;
+
+        logger.debug(`@Activity decorator applied to class: ${targetClass.name}`);
+        logger.debug(`Activity name: ${activityName}`);
+        logger.debug(`Activity options: ${JSON.stringify(options)}`);
+
         const metadata = {
+            name: activityName,
+            className: targetClass.name,
             ...options,
-            className: (target as { name: string }).name,
         };
 
-        SetMetadata(TEMPORAL_ACTIVITY, metadata)(target as Function);
-        Reflect.defineMetadata(TEMPORAL_ACTIVITY, metadata, target as object);
+        logger.debug(
+            `Storing activity metadata for ${targetClass.name}: ${JSON.stringify(metadata)}`,
+        );
+
+        try {
+            // Standardized metadata storage - only use Reflect.defineMetadata
+            Reflect.defineMetadata(TEMPORAL_ACTIVITY, metadata, targetClass);
+            logger.debug(`Stored activity metadata on class constructor: ${targetClass.name}`);
+
+            // Store on prototype for discovery service compatibility
+            Reflect.defineMetadata(TEMPORAL_ACTIVITY, metadata, targetClass.prototype);
+            logger.debug(`Stored activity metadata on class prototype: ${targetClass.name}`);
+
+            logger.debug(`@Activity decorator successfully applied to ${targetClass.name}`);
+        } catch (error) {
+            logger.error(`Failed to apply @Activity decorator to ${targetClass.name}:`, error);
+            throw error;
+        }
 
         return target as never;
     };
@@ -69,12 +95,20 @@ export const ActivityMethod = (nameOrOptions?: string | ActivityMethodOptions): 
         propertyKey: string | symbol,
         descriptor?: PropertyDescriptor,
     ): PropertyDescriptor | void => {
+        const className = target.constructor.name;
+        const methodName = propertyKey.toString();
+
+        logger.debug(`@ActivityMethod decorator applied to method: ${className}.${methodName}`);
+        logger.debug(`ActivityMethod nameOrOptions: ${JSON.stringify(nameOrOptions)}`);
+
         let activityName: string;
         let methodOptions: ActivityMethodOptions = {};
 
+        // Parse name and options
         if (typeof nameOrOptions === 'string') {
             activityName = nameOrOptions;
             methodOptions = { name: activityName };
+            logger.debug(`Using provided string name: ${activityName}`);
         } else if (
             nameOrOptions &&
             typeof nameOrOptions.name === 'string' &&
@@ -82,37 +116,92 @@ export const ActivityMethod = (nameOrOptions?: string | ActivityMethodOptions): 
         ) {
             activityName = nameOrOptions.name;
             methodOptions = { ...nameOrOptions };
+            logger.debug(`Using name from options object: ${activityName}`);
         } else if (nameOrOptions && nameOrOptions.name === '') {
             // Handle explicit empty name - should throw error
             activityName = '';
             methodOptions = { ...nameOrOptions };
+            logger.debug(`Explicit empty name provided`);
         } else if (nameOrOptions && !nameOrOptions.name) {
             // Handle options object without name property
-            activityName = propertyKey.toString();
+            activityName = methodName;
             methodOptions = { name: activityName, ...nameOrOptions };
+            logger.debug(`Using method name as activity name: ${activityName}`);
         } else {
-            activityName = propertyKey.toString();
+            activityName = methodName;
             methodOptions = { name: activityName };
+            logger.debug(`Auto-generated activity name from method name: ${activityName}`);
         }
 
         // Validate activity name
         if (!activityName || activityName.trim().length === 0) {
-            throw new Error('Activity name cannot be empty');
+            const error = 'Activity name cannot be empty';
+            logger.error(
+                `@ActivityMethod validation failed for ${className}.${methodName}: ${error}`,
+            );
+            throw new Error(error);
         }
+
+        logger.verbose(
+            `Activity name resolved to: "${activityName}" for method ${className}.${methodName}`,
+        );
 
         const metadata = {
             name: activityName,
-            methodName: propertyKey.toString(),
+            methodName,
+            className,
             ...methodOptions,
         };
 
-        if (descriptor?.value) {
-            SetMetadata(TEMPORAL_ACTIVITY_METHOD, metadata)(descriptor.value as Function);
-            Reflect.defineMetadata(TEMPORAL_ACTIVITY_METHOD, metadata, descriptor.value as object);
-            return descriptor;
-        } else {
-            // Handle property-style decorators
-            Reflect.defineMetadata(TEMPORAL_ACTIVITY_METHOD, metadata, target, propertyKey);
+        logger.debug(
+            `Final activity metadata for ${className}.${methodName}: ${JSON.stringify(metadata)}`,
+        );
+
+        try {
+            if (descriptor?.value && typeof descriptor.value === 'function') {
+                logger.debug(
+                    `Storing @ActivityMethod metadata on method function: ${className}.${methodName}`,
+                );
+
+                // Standardized metadata storage - only use Reflect.defineMetadata
+                Reflect.defineMetadata(TEMPORAL_ACTIVITY_METHOD, metadata, descriptor.value);
+                logger.debug(
+                    `Stored activity method metadata on method function: ${className}.${methodName}`,
+                );
+
+                // Store on class prototype for discovery
+                const activityMethods =
+                    Reflect.getMetadata(TEMPORAL_ACTIVITY_METHOD, target.constructor.prototype) ||
+                    {};
+                activityMethods[methodName] = metadata;
+                Reflect.defineMetadata(
+                    TEMPORAL_ACTIVITY_METHOD,
+                    activityMethods,
+                    target.constructor.prototype,
+                );
+                logger.debug(`Stored activity method metadata on class prototype: ${className}`);
+                logger.debug(
+                    `Total activity methods on ${className}: ${Object.keys(activityMethods).length}`,
+                );
+
+                logger.debug(
+                    `@ActivityMethod decorator successfully applied to ${className}.${methodName}`,
+                );
+                return descriptor;
+            } else {
+                logger.debug(`Handling property-style decorator for ${className}.${methodName}`);
+                // Handle property-style decorators (fallback)
+                Reflect.defineMetadata(TEMPORAL_ACTIVITY_METHOD, metadata, target, propertyKey);
+                logger.debug(
+                    `Stored activity method metadata on property: ${className}.${methodName}`,
+                );
+            }
+        } catch (error) {
+            logger.error(
+                `Failed to apply @ActivityMethod decorator to ${className}.${methodName}:`,
+                error,
+            );
+            throw error;
         }
     };
 };
@@ -157,38 +246,111 @@ export function InjectActivity<T>(
     options?: Record<string, unknown>,
 ): PropertyDecorator {
     return (target: Object, propertyKey: string | symbol) => {
-        // Ensure required timeout is present
-        const safeOptions = (() => {
-            const opts = options ? { ...options } : {};
-            if (!('scheduleToCloseTimeout' in opts) && !('startToCloseTimeout' in opts)) {
-                opts.startToCloseTimeout =
-                    typeof require !== 'undefined'
-                        ? require('../constants').TIMEOUTS.ACTIVITY_SHORT
-                        : '1m';
-            }
-            return opts;
-        })();
-        // Use globalThis.proxyActivities if available (for test mocks), otherwise use imported proxyActivities
-        let proxyActivitiesFn: typeof proxyActivities;
-        if (
-            typeof globalThis !== 'undefined' &&
-            (globalThis as unknown as { proxyActivities?: typeof proxyActivities }).proxyActivities
-        ) {
-            proxyActivitiesFn = (
-                globalThis as unknown as { proxyActivities: typeof proxyActivities }
-            ).proxyActivities;
-        } else if (proxyActivities) {
-            proxyActivitiesFn = proxyActivities;
-        } else {
-            throw new Error('proxyActivities is not available');
+        const className = target.constructor.name;
+        const propertyName = propertyKey.toString();
+
+        logger.debug(`@InjectActivity decorator applied to property: ${className}.${propertyName}`);
+        logger.debug(`Activity type: ${activityType?.name}`);
+        logger.debug(`Activity injection options: ${JSON.stringify(options)}`);
+
+        if (!activityType) {
+            const error = 'Activity type is required';
+            logger.error(
+                `@InjectActivity validation failed for ${className}.${propertyName}: ${error}`,
+            );
+            throw new Error(error);
         }
-        const proxy = proxyActivitiesFn(safeOptions);
-        Object.defineProperty(target, propertyKey, {
-            value: proxy,
-            writable: false,
-            enumerable: false,
-            configurable: false,
-        });
+
+        // Validate that activityType is actually a class constructor
+        if (typeof activityType !== 'function') {
+            const error = 'Activity type must be a class constructor';
+            logger.error(
+                `@InjectActivity validation failed for ${className}.${propertyName}: ${error}`,
+            );
+            throw new Error(error);
+        }
+
+        // Store metadata for dependency injection and discovery
+        const metadata = {
+            activityType,
+            activityName: activityType.name,
+            propertyKey: propertyName,
+            className,
+            options: options || {},
+        };
+
+        logger.debug(
+            `Storing @InjectActivity metadata for ${className}.${propertyName}: ${JSON.stringify(metadata)}`,
+        );
+
+        try {
+            Reflect.defineMetadata('INJECT_ACTIVITY', metadata, target, propertyKey);
+            logger.debug(`Stored @InjectActivity metadata for ${className}.${propertyName}`);
+
+            // Try to use proxyActivities if available in workflow context
+            try {
+                const globalProxyActivities = (globalThis as { proxyActivities?: unknown })
+                    .proxyActivities;
+                let importedProxyActivities: unknown;
+
+                try {
+                    // Try to import proxyActivities from @temporalio/workflow
+                    importedProxyActivities = require('@temporalio/workflow').proxyActivities;
+                } catch {
+                    // Import failed, continue with global check
+                }
+
+                const proxyActivitiesFunc = (globalProxyActivities ||
+                    importedProxyActivities) as any;
+
+                if (proxyActivitiesFunc) {
+                    // Set default options if none provided or if empty object
+                    const activityOptions =
+                        options && Object.keys(options).length > 0
+                            ? options
+                            : { startToCloseTimeout: '1m' };
+                    const proxy = proxyActivitiesFunc(activityOptions);
+
+                    Object.defineProperty(target, propertyKey, {
+                        value: proxy,
+                        writable: false,
+                        enumerable: false,
+                        configurable: false,
+                    });
+                } else {
+                    // proxyActivities not available, create a getter that will be replaced by the DI system
+                    Object.defineProperty(target, propertyKey, {
+                        get() {
+                            const error =
+                                `Activity ${activityType.name} not injected for ${className}.${propertyName}. ` +
+                                `This should be set up by the workflow execution context.`;
+                            logger.warn(
+                                `Activity not injected: ${className}.${propertyName} -> ${activityType.name}`,
+                            );
+                            throw new Error(error);
+                        },
+                        enumerable: false,
+                        configurable: true, // Allow DI system to replace this
+                    });
+                }
+            } catch {
+                // If proxyActivities setup fails, throw error
+                throw new Error('proxyActivities is not available');
+            }
+            logger.debug(
+                `Created property descriptor for activity injection: ${className}.${propertyName}`,
+            );
+
+            logger.debug(
+                `@InjectActivity decorator successfully applied to ${className}.${propertyName}`,
+            );
+        } catch (error) {
+            logger.error(
+                `Failed to apply @InjectActivity decorator to ${className}.${propertyName}:`,
+                error,
+            );
+            throw error;
+        }
     };
 }
 

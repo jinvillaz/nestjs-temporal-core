@@ -1,242 +1,505 @@
-import { Injectable, OnModuleInit, Optional, Inject } from '@nestjs/common';
-import { DEFAULT_TASK_QUEUE, TEMPORAL_MODULE_OPTIONS } from '../constants';
+import { Injectable, Logger, OnModuleInit, OnModuleDestroy, Inject } from '@nestjs/common';
+import { TEMPORAL_MODULE_OPTIONS } from '../constants';
 import {
-    DiscoveryStats,
-    StartWorkflowOptions,
-    SystemStatus,
-    WorkerStatus,
     TemporalOptions,
+    WorkflowStartOptions,
+    ServiceHealth,
+    ServiceStats,
+    DiscoveryStats,
+    WorkerStatus,
+    ActivityMethodInfo,
+    ScheduleCreateOptions,
+    OverlapPolicy,
+    ActivityFunction,
+    MetadataInfo,
 } from '../interfaces';
 import { TemporalClientService } from './temporal-client.service';
-import { TemporalDiscoveryService } from './temporal-discovery.service';
 import { TemporalWorkerManagerService } from './temporal-worker.service';
-import { createLogger, TemporalLogger } from '../utils/logger';
+import { TemporalScheduleService } from './temporal-schedule.service';
+import { TemporalActivityService } from './temporal-activity.service';
+import { TemporalDiscoveryService } from './temporal-discovery.service';
+import { TemporalMetadataAccessor } from './temporal-metadata.service';
+import { TemporalLogger } from '../utils/logger';
+import { DEFAULT_TASK_QUEUE } from '../constants';
 
 /**
- * Streamlined unified service for interacting with Temporal
- *
- * Provides comprehensive access to all Temporal functionality:
- * - Client operations (start workflows, send signals, execute queries)
- * - Worker management (status, health checks, restart)
- * - Discovery services (workflows, activities)
- *
- * @example
- * ```typescript
- * @Injectable()
- * export class OrderService {
- *   constructor(private readonly temporal: TemporalService) {}
- *
- *   async processOrder(orderId: string) {
- *     // Start workflow directly with client
- *     const { workflowId, result } = await this.temporal.startWorkflow(
- *       'processOrder',
- *       [orderId],
- *       { taskQueue: 'orders' }
- *     );
- *
- *     return { workflowId, result };
- *   }
- *
- *   async getOrderStatus(workflowId: string) {
- *     return await this.temporal.queryWorkflow(workflowId, 'getStatus');
- *   }
- * }
- * ```
+ * Main unified service for Temporal operations
+ * Provides a single interface to access all Temporal functionality
  */
 @Injectable()
-export class TemporalService implements OnModuleInit {
-    private readonly logger: TemporalLogger;
+export class TemporalService implements OnModuleInit, OnModuleDestroy {
+    private readonly logger = new Logger(TemporalService.name);
+    private readonly temporalLogger = new TemporalLogger(TemporalService.name);
+    private isInitialized = false;
+    private shutdownPromise: Promise<void> | null = null;
 
     constructor(
-        private readonly clientService: TemporalClientService,
-        private readonly discoveryService: TemporalDiscoveryService,
         @Inject(TEMPORAL_MODULE_OPTIONS)
         private readonly options: TemporalOptions,
-        @Optional() private readonly workerManager?: TemporalWorkerManagerService,
-    ) {
-        this.logger = createLogger(TemporalService.name);
-    }
+        private readonly clientService: TemporalClientService,
+        private readonly workerService: TemporalWorkerManagerService,
+        private readonly scheduleService: TemporalScheduleService,
+        private readonly activityService: TemporalActivityService,
+        private readonly discoveryService: TemporalDiscoveryService,
+        private readonly metadataAccessor: TemporalMetadataAccessor,
+    ) {}
 
-    async onModuleInit() {
-        await this.logInitializationSummary();
+    /**
+     * Initialize the unified service
+     */
+    async onModuleInit(): Promise<void> {
+        try {
+            this.logger.log('Initializing Temporal Service...');
+
+            // Wait for all individual services to initialize
+            await this.waitForServicesInitialization();
+
+            // Mark this service as initialized
+            this.isInitialized = true;
+
+            this.logger.log('Temporal Service initialized successfully');
+            await this.logInitializationSummary();
+        } catch (error) {
+            this.logger.error(
+                `Failed to initialize Temporal Service: ${this.extractErrorMessage(error)}`,
+            );
+            throw error;
+        }
     }
 
     /**
-     * Get the Temporal client service for advanced operations
+     * Cleanup on module destroy
      */
-    getClient(): TemporalClientService {
-        return this.clientService;
-    }
+    async onModuleDestroy(): Promise<void> {
+        if (this.shutdownPromise) {
+            return this.shutdownPromise;
+        }
 
-    // Note: Schedule service functionality has been removed
-    // due to static configuration issues
-
-    /**
-     * Get the workflow discovery service for introspection
-     */
-    getDiscoveryService(): TemporalDiscoveryService {
-        return this.discoveryService;
+        this.shutdownPromise = this.performShutdown();
+        return this.shutdownPromise;
     }
 
     /**
-     * Get the worker manager if available
+     * Wait for all services to initialize
      */
-    getWorkerManager(): TemporalWorkerManagerService | undefined {
-        return this.workerManager;
+    private async waitForServicesInitialization(): Promise<void> {
+        const maxWaitTime = 30000; // 30 seconds
+        const startTime = Date.now();
+
+        while (Date.now() - startTime < maxWaitTime) {
+            try {
+                // Check if all critical services are ready
+                const clientReady = this.clientService.isHealthy();
+                const discoveryReady = this.discoveryService.getHealthStatus().isComplete;
+
+                if (clientReady && discoveryReady) {
+                    this.logger.debug('All services are ready');
+                    return;
+                }
+
+                // Wait a bit before checking again
+                await new Promise((resolve) => setTimeout(resolve, 100));
+            } catch (error) {
+                this.logger.warn('Service readiness check failed', error);
+            }
+        }
+
+        this.logger.warn('Service initialization timeout - continuing anyway');
     }
 
-    // ==========================================
-    // Workflow Operations (Direct Client Access)
-    // ==========================================
+    /**
+     * Perform graceful shutdown
+     */
+    private async performShutdown(): Promise<void> {
+        try {
+            this.logger.log('Shutting down Temporal Service...');
+
+            // Stop worker if running
+            if (this.workerService && this.workerService.isWorkerRunning()) {
+                await this.workerService.stopWorker();
+            }
+
+            this.isInitialized = false;
+            this.logger.log('Temporal Service shut down successfully');
+        } catch (error) {
+            this.logger.error(`Error during service shutdown: ${this.extractErrorMessage(error)}`);
+        } finally {
+            this.shutdownPromise = null;
+        }
+    }
+
+    // =================== CLIENT OPERATIONS ===================
 
     /**
-     * Start workflow with basic options
-     *
-     * @param workflowType Name of the workflow type to start
-     * @param args Arguments to pass to the workflow
-     * @param options Workflow execution options
-     * @returns Object containing workflow execution details
-     * @throws Error when Temporal client is not initialized or connection fails
-     * @throws Error when workflow start fails due to invalid parameters or server errors
-     * @throws Error when workflow type is not found or not registered
-     *
-     * @example
-     * ```typescript
-     * // Start workflow directly
-     * const { workflowId, result } = await temporalService.startWorkflow(
-     *   'processOrder',
-     *   [orderId, customerId],
-     *   {
-     *     taskQueue: 'orders',
-     *     workflowId: `order-${orderId}`,
-     *     searchAttributes: { 'customer-id': customerId }
-     *   }
-     * );
-     * ```
+     * Start a workflow execution
      */
-    async startWorkflow<T, A extends unknown[]>(
+    async startWorkflow<T = unknown>(
         workflowType: string,
-        args: A,
-        options: Partial<StartWorkflowOptions>,
-    ): Promise<{
-        result: Promise<T>;
-        workflowId: string;
-        firstExecutionRunId: string;
-        handle: unknown;
-    }> {
-        const enhancedOptions = this.enhanceWorkflowOptions(options);
-
-        this.logger.debug(
-            `Starting workflow: ${workflowType} with options: ${JSON.stringify(enhancedOptions)}`,
-        );
-
-        return this.clientService.startWorkflow<T, A>(workflowType, args, enhancedOptions);
+        args?: unknown[],
+        options?: WorkflowStartOptions,
+    ): Promise<T> {
+        this.ensureInitialized();
+        const enhancedOptions = this.enhanceWorkflowOptions(options || {});
+        return this.clientService.startWorkflow(
+            workflowType,
+            args || [],
+            enhancedOptions,
+        ) as Promise<T>;
     }
 
     /**
-     * Send signal to workflow with validation
-     *
-     * @param workflowId The ID of the workflow to signal
-     * @param signalName Name of the signal to send
-     * @param args Arguments to pass with the signal
-     * @throws Error when workflow ID is empty or invalid
-     * @throws Error when workflow is not found or not running
-     * @throws Error when Temporal client connection fails
-     * @throws Error when signal delivery fails
+     * Signal a workflow
      */
-    async signalWorkflow(
-        workflowId: string,
-        signalName: string,
-        args: unknown[] = [],
-    ): Promise<void> {
-        this.validateWorkflowExists(workflowId);
-        await this.clientService.signalWorkflow(workflowId, signalName, args);
-        this.logger.debug(`Sent signal '${signalName}' to workflow ${workflowId}`);
+    async signalWorkflow(workflowId: string, signalName: string, args?: unknown[]): Promise<void> {
+        if (!workflowId || workflowId.trim() === '') {
+            throw new Error('Workflow ID is required');
+        }
+        this.ensureInitialized();
+        return this.clientService.signalWorkflow(workflowId, signalName, args || []);
     }
 
     /**
-     * Query workflow state with validation
-     *
-     * @param workflowId The ID of the workflow to query
-     * @param queryName Name of the query to execute
-     * @param args Arguments to pass with the query
-     * @returns Promise resolving to the query result
-     * @throws Error when workflow ID is empty or invalid
-     * @throws Error when workflow is not found or not running
-     * @throws Error when query is not defined or not supported by the workflow
-     * @throws Error when Temporal client connection fails
+     * Query a workflow
      */
-    async queryWorkflow<T>(
+    async queryWorkflow<T = unknown>(
         workflowId: string,
         queryName: string,
-        args: unknown[] = [],
+        args?: unknown[],
     ): Promise<T> {
-        this.validateWorkflowExists(workflowId);
-        const result = await this.clientService.queryWorkflow<T>(workflowId, queryName, args);
-        this.logger.debug(`Queried '${queryName}' on workflow ${workflowId}`);
-        return result;
+        if (!workflowId || workflowId.trim() === '') {
+            throw new Error('Workflow ID is required');
+        }
+        this.ensureInitialized();
+        return this.clientService.queryWorkflow(workflowId, queryName, args || []);
     }
 
     /**
-     * Terminate workflow with enhanced logging
-     *
-     * @param workflowId The ID of the workflow to terminate
-     * @param reason Optional reason for termination
-     * @throws Error when workflow is not found or already completed
-     * @throws Error when Temporal client connection fails
+     * Get workflow handle
+     */
+    async getWorkflowHandle<T = unknown>(workflowId: string, runId?: string): Promise<T> {
+        this.ensureInitialized();
+        const handle = this.clientService.getWorkflowHandle(workflowId, runId);
+        return handle as unknown as Promise<T>;
+    }
+
+    /**
+     * Terminate a workflow
      */
     async terminateWorkflow(workflowId: string, reason?: string): Promise<void> {
-        await this.clientService.terminateWorkflow(workflowId, reason);
-        this.logger.log(`Terminated workflow ${workflowId}${reason ? `: ${reason}` : ''}`);
+        this.ensureInitialized();
+        return this.clientService.terminateWorkflow(workflowId, reason);
     }
 
     /**
-     * Cancel workflow with enhanced logging
-     *
-     * @param workflowId The ID of the workflow to cancel
-     * @throws Error when workflow is not found or already completed
-     * @throws Error when Temporal client connection fails
+     * Cancel a workflow
      */
     async cancelWorkflow(workflowId: string): Promise<void> {
-        await this.clientService.cancelWorkflow(workflowId);
-        this.logger.log(`Cancelled workflow ${workflowId}`);
+        this.ensureInitialized();
+        return this.clientService.cancelWorkflow(workflowId);
     }
 
-    // ==========================================
-    // Schedule Operations - Removed
-    // ==========================================
-    // Schedule service functionality has been removed due to static configuration issues
+    // =================== WORKER OPERATIONS ===================
 
-    // ==========================================
-    // Discovery and Introspection
-    // ==========================================
+    /**
+     * Start the worker
+     */
+    async startWorker(): Promise<void> {
+        this.ensureInitialized();
+        return this.workerService.startWorker();
+    }
+
+    /**
+     * Stop the worker
+     */
+    async stopWorker(): Promise<void> {
+        this.ensureInitialized();
+        return this.workerService.stopWorker();
+    }
+
+    /**
+     * Restart the worker
+     */
+    async restartWorker(): Promise<void> {
+        this.ensureInitialized();
+        if (!this.workerService) {
+            throw new Error('Worker manager not available');
+        }
+        return this.workerService.restartWorker();
+    }
+
+    /**
+     * Get worker status
+     */
+    getWorkerStatus(): WorkerStatus | null {
+        this.ensureInitialized();
+        if (!this.workerService) {
+            return null;
+        }
+        return this.workerService.getStatus();
+    }
+
+    /**
+     * Check if worker is running
+     */
+    isWorkerRunning(): boolean {
+        this.ensureInitialized();
+        const status = this.workerService.getWorkerStatus();
+        return status.isRunning;
+    }
 
     /**
      * Check if worker is available
      */
     hasWorker(): boolean {
-        return this.workerManager !== undefined;
+        return this.workerService?.isWorkerAvailable() || false;
     }
 
     /**
-     * Get worker status if available
+     * Check if a workflow exists
      */
-    getWorkerStatus(): WorkerStatus | null {
-        return this.workerManager?.getWorkerStatus() || null;
+    hasWorkflow(workflowType: string): boolean {
+        this.ensureInitialized();
+        return this.discoveryService.hasWorkflow(workflowType);
+    }
+
+    // =================== SCHEDULE OPERATIONS ===================
+
+    /**
+     * Create a new schedule
+     */
+    async createSchedule(options: ScheduleCreateOptions): Promise<unknown> {
+        this.ensureInitialized();
+        return this.scheduleService.createSchedule(options);
     }
 
     /**
-     * Restart worker if available
-     *
-     * @throws Error when worker manager is not available or initialized
-     * @throws Error when worker restart fails
+     * Get a schedule
      */
-    async restartWorker(): Promise<void> {
-        if (!this.workerManager) {
-            throw new Error('Worker manager not available');
+    async getSchedule(scheduleId: string): Promise<unknown> {
+        this.ensureInitialized();
+        return this.scheduleService.getSchedule(scheduleId);
+    }
+
+    /**
+     * Update a schedule
+     */
+    async updateSchedule(
+        scheduleId: string,
+        updater: (schedule: Record<string, unknown>) => void,
+    ): Promise<void> {
+        this.ensureInitialized();
+        return this.scheduleService.updateSchedule(scheduleId, updater);
+    }
+
+    /**
+     * Delete a schedule
+     */
+    async deleteSchedule(scheduleId: string): Promise<void> {
+        this.ensureInitialized();
+        return this.scheduleService.deleteSchedule(scheduleId);
+    }
+
+    /**
+     * Pause a schedule
+     */
+    async pauseSchedule(scheduleId: string, note?: string): Promise<void> {
+        this.ensureInitialized();
+        return this.scheduleService.pauseSchedule(scheduleId, note);
+    }
+
+    /**
+     * Unpause a schedule
+     */
+    async unpauseSchedule(scheduleId: string, note?: string): Promise<void> {
+        this.ensureInitialized();
+        return this.scheduleService.unpauseSchedule(scheduleId, note);
+    }
+
+    /**
+     * Trigger a schedule
+     */
+    async triggerSchedule(scheduleId: string, overlap?: OverlapPolicy): Promise<void> {
+        this.ensureInitialized();
+        return this.scheduleService.triggerSchedule(scheduleId, overlap);
+    }
+
+    // =================== ACTIVITY OPERATIONS ===================
+
+    /**
+     * Execute an activity
+     */
+    async executeActivity(name: string, ...args: unknown[]): Promise<unknown> {
+        this.ensureInitialized();
+        return this.activityService.executeActivity(name, ...args);
+    }
+
+    /**
+     * Get activity by name
+     */
+    getActivity(name: string): Function | undefined {
+        this.ensureInitialized();
+        return this.activityService.getActivity(name);
+    }
+
+    /**
+     * Get all activities
+     */
+    getAllActivities(): Record<string, Function> {
+        this.ensureInitialized();
+        return this.activityService.getAllActivities();
+    }
+
+    /**
+     * Check if activity exists
+     */
+    hasActivity(name: string): boolean {
+        this.ensureInitialized();
+        return this.activityService.hasActivity(name);
+    }
+
+    /**
+     * Get activity names
+     */
+    getActivityNames(): string[] {
+        this.ensureInitialized();
+        return this.activityService.getActivityNames();
+    }
+
+    // =================== DISCOVERY OPERATIONS ===================
+
+    /**
+     * Get discovery statistics
+     */
+    getDiscoveryStats(): DiscoveryStats {
+        this.ensureInitialized();
+        return this.discoveryService.getStats();
+    }
+
+    /**
+     * Refresh component discovery
+     */
+    async refreshDiscovery(): Promise<void> {
+        this.ensureInitialized();
+        return this.discoveryService.rediscover();
+    }
+
+    // =================== METADATA OPERATIONS ===================
+
+    /**
+     * Check if a class is an activity
+     */
+    isActivity(target: Function): boolean {
+        return this.metadataAccessor.isActivity(target);
+    }
+
+    /**
+     * Check if a method is an activity method
+     */
+    isActivityMethod(target: object, methodName: string): boolean {
+        try {
+            const targetObj = target as { constructor?: { prototype?: object } };
+            return (
+                Reflect.hasMetadata('TEMPORAL_ACTIVITY_METHOD', target, methodName) ||
+                (targetObj.constructor?.prototype !== undefined &&
+                    Reflect.hasMetadata(
+                        'TEMPORAL_ACTIVITY_METHOD',
+                        targetObj.constructor.prototype,
+                        methodName,
+                    ))
+            );
+        } catch {
+            return false;
         }
-        await this.workerManager.restartWorker();
-        this.logger.log('Worker restarted successfully');
+    }
+
+    /**
+     * Get activity metadata
+     */
+    getActivityMetadata(target: Function): MetadataInfo | null {
+        const metadata = this.metadataAccessor.getActivityMetadata(target);
+        return metadata as MetadataInfo | null;
+    }
+
+    /**
+     * Extract activity methods from a class
+     */
+    extractActivityMethods(target: Function): ActivityMethodInfo[] {
+        return this.metadataAccessor.extractActivityMethodsFromClass(target);
+    }
+
+    // =================== HEALTH AND STATUS ===================
+
+    /**
+     * Get overall health status (async version for compatibility)
+     */
+    async getOverallHealth(): Promise<{
+        status: 'healthy' | 'unhealthy' | 'degraded';
+        components: {
+            client: { healthy: boolean; available: boolean };
+            worker: { healthy: boolean; available: boolean; status: string };
+            schedule: { healthy: boolean; available: boolean };
+            activity: { healthy: boolean; available: boolean };
+            discovery: { healthy: boolean; available: boolean };
+        };
+        isInitialized: boolean;
+        namespace: string;
+        summary: {
+            totalActivities: number;
+            totalSchedules: number;
+            workerRunning: boolean;
+            clientConnected: boolean;
+        };
+    }> {
+        const health = this.getHealth();
+        return {
+            ...health,
+            components: {
+                client: {
+                    healthy: health.services.client.status === 'healthy',
+                    available: health.services.client.status === 'healthy',
+                },
+                worker: {
+                    healthy: health.services.worker.status === 'healthy',
+                    available: this.hasWorker(),
+                    status: health.services.worker.status === 'healthy' ? 'healthy' : 'error',
+                },
+                schedule: {
+                    healthy: health.services.schedule.status === 'healthy',
+                    available: health.services.schedule.status !== 'unhealthy',
+                },
+                activity: {
+                    healthy: health.services.activity.status === 'healthy',
+                    available: health.services.activity.status !== 'unhealthy',
+                },
+                discovery: {
+                    healthy: health.services.discovery.status === 'healthy',
+                    available: health.services.discovery.status !== 'unhealthy',
+                },
+            },
+        };
+    }
+
+    /**
+     * Get system status
+     */
+    async getSystemStatus(): Promise<{
+        client: { available: boolean; healthy: boolean };
+        worker: { available: boolean; status?: WorkerStatus; health?: string };
+        discovery: DiscoveryStats;
+    }> {
+        const health = this.getHealth();
+        return {
+            client: {
+                available: health.services.client.status === 'healthy',
+                healthy: health.services.client.status === 'healthy',
+            },
+            worker: {
+                available: this.hasWorker(),
+                status: this.getWorkerStatus() || undefined,
+                health: health.services.worker.status,
+            },
+            discovery: this.getDiscoveryStats(),
+        };
     }
 
     /**
@@ -246,164 +509,353 @@ export class TemporalService implements OnModuleInit {
         status: 'healthy' | 'unhealthy' | 'degraded' | 'not_available';
         details?: unknown;
     }> {
-        if (!this.workerManager) {
-            return { status: 'not_available' };
-        }
-
         try {
-            const status = this.workerManager.getWorkerStatus();
-            if (status.isHealthy) {
-                return { status: 'healthy', details: status };
-            } else if (status.isRunning) {
-                return { status: 'degraded', details: status };
-            } else {
-                return { status: 'unhealthy', details: status };
+            if (!this.hasWorker()) {
+                return { status: 'not_available' as const };
             }
+
+            if (!this.workerService) {
+                return { status: 'not_available' as const };
+            }
+
+            const workerStatus = this.workerService.getWorkerStatus();
+            let status: 'healthy' | 'unhealthy' | 'degraded';
+
+            if (workerStatus.isHealthy) {
+                status = 'healthy';
+            } else if (workerStatus.isRunning) {
+                status = 'degraded';
+            } else {
+                status = 'unhealthy';
+            }
+
+            return {
+                status,
+                details: workerStatus,
+            };
         } catch (error) {
-            this.logger.error(`Error checking worker health: ${(error as Error).message}`);
-            return { status: 'unhealthy', details: { error: (error as Error).message } };
+            return {
+                status: 'unhealthy' as const,
+                details: { error: this.extractErrorMessage(error) },
+            };
         }
     }
 
     /**
-     * Get discovery statistics
-     */
-    getDiscoveryStats(): DiscoveryStats {
-        return this.discoveryService.getStats();
-    }
-
-    /**
-     * Get comprehensive system status
-     */
-    async getSystemStatus(): Promise<SystemStatus> {
-        const clientStatus = {
-            available: this.clientService.getRawClient() !== null,
-            healthy: this.clientService.isHealthy(),
-        };
-
-        const workerStatus = this.hasWorker() ? this.getWorkerStatus() : undefined;
-
-        return {
-            client: clientStatus,
-            worker: {
-                available: this.hasWorker(),
-                status: workerStatus || undefined,
-                health: workerStatus
-                    ? workerStatus.isHealthy
-                        ? 'healthy'
-                        : 'unhealthy'
-                    : undefined,
-            },
-            discovery: this.getDiscoveryStats(),
-        };
-    }
-
-    /**
-     * Get overall system health
-     */
-    async getOverallHealth(): Promise<{
-        status: 'healthy' | 'degraded' | 'unhealthy';
-        components: {
-            client: { status: string; healthy: boolean };
-            worker: { status: string; available: boolean };
-            discovery: { status: string; workflows: number };
-        };
-    }> {
-        const systemStatus = await this.getSystemStatus();
-        const discoveryStats = this.getDiscoveryStats();
-
-        let overallStatus: 'healthy' | 'degraded' | 'unhealthy' = 'healthy';
-
-        // Check client health
-        if (!systemStatus.client.healthy) {
-            overallStatus = 'unhealthy';
-        }
-
-        // Check worker health
-        if (systemStatus.worker.available && !systemStatus.worker.status?.isHealthy) {
-            overallStatus = overallStatus === 'healthy' ? 'degraded' : 'unhealthy';
-        }
-
-        // Check discovery health
-        if (discoveryStats.workflows === 0 && discoveryStats.controllers > 0) {
-            overallStatus = overallStatus === 'healthy' ? 'degraded' : 'unhealthy';
-        }
-
-        return {
-            status: overallStatus,
-            components: {
-                client: {
-                    status: systemStatus.client.healthy ? 'connected' : 'disconnected',
-                    healthy: systemStatus.client.healthy,
-                },
-                worker: {
-                    status: systemStatus.worker.available
-                        ? systemStatus.worker.status?.isHealthy
-                            ? 'running'
-                            : 'error'
-                        : 'not_available',
-                    available: systemStatus.worker.available,
-                },
-                discovery: {
-                    status: discoveryStats.workflows > 0 ? 'active' : 'inactive',
-                    workflows: discoveryStats.workflows,
-                },
-            },
-        };
-    }
-
-    // ==========================================
-    // Utility Methods
-    // ==========================================
-
-    /**
-     * Get available workflow types
+     * Get available workflows
      */
     getAvailableWorkflows(): string[] {
         return this.discoveryService.getWorkflowNames();
     }
 
     /**
-     * Check if workflow exists
+     * Get comprehensive health status
      */
-    hasWorkflow(_workflowName: string): boolean {
-        return this.discoveryService.hasWorkflow(_workflowName);
-    }
+    getHealth(): {
+        status: 'healthy' | 'unhealthy' | 'degraded';
+        services: {
+            client: ServiceHealth;
+            worker: ServiceHealth;
+            schedule: ServiceHealth;
+            activity: ServiceHealth;
+            discovery: ServiceHealth;
+        };
+        isInitialized: boolean;
+        namespace: string;
+        summary: {
+            totalActivities: number;
+            totalSchedules: number;
+            workerRunning: boolean;
+            clientConnected: boolean;
+        };
+    } {
+        const clientHealth = this.getClientHealth();
+        const workerHealth = this.getWorkerHealthStatus();
+        const scheduleHealth = this.getScheduleHealth();
+        const activityHealth = this.getActivityHealth();
+        const discoveryHealth = this.getDiscoveryHealth();
 
-    // ==========================================
-    // Private Helper Methods
-    // ==========================================
+        const services = {
+            client: clientHealth,
+            worker: workerHealth,
+            schedule: scheduleHealth,
+            activity: activityHealth,
+            discovery: discoveryHealth,
+        };
 
-    /**
-     * Enhance workflow options with defaults
-     */
-    private enhanceWorkflowOptions(options: Partial<StartWorkflowOptions>): StartWorkflowOptions {
-        const { taskQueue, ...restOptions } = options;
+        // Determine overall status
+        const allHealthy = Object.values(services).every((service) => service.status === 'healthy');
+        const anyUnhealthy = Object.values(services).some(
+            (service) => service.status === 'unhealthy',
+        );
+
+        // Check for specific degraded conditions
+        const discoveryStats = this.discoveryService.getStats();
+        const hasDiscoveryIssues = discoveryStats.controllers > 0 && discoveryStats.workflows === 0;
+        const hasWorkerIssues =
+            services.worker.status === 'degraded' && services.client.status === 'healthy';
+
+        let overallStatus: 'healthy' | 'unhealthy' | 'degraded';
+        if (allHealthy && !hasDiscoveryIssues) {
+            overallStatus = 'healthy';
+        } else if (anyUnhealthy) {
+            overallStatus = 'unhealthy';
+        } else {
+            overallStatus = 'degraded';
+        }
+
         return {
-            taskQueue: taskQueue || this.options.taskQueue || DEFAULT_TASK_QUEUE,
-            ...restOptions,
+            status: overallStatus,
+            services,
+            isInitialized: this.isInitialized,
+            namespace: this.options.connection?.namespace || 'default',
+            summary: {
+                totalActivities: activityHealth.activitiesCount?.total || 0,
+                totalSchedules: scheduleHealth.schedulesCount || 0,
+                workerRunning: workerHealth.status === 'healthy',
+                clientConnected: clientHealth.status === 'healthy',
+            },
         };
     }
 
     /**
-     * Validate workflow exists before operations
+     * Get service statistics
      */
-    private validateWorkflowExists(workflowId: string): void {
-        if (!workflowId || workflowId.trim().length === 0) {
-            throw new Error('Workflow ID is required');
+    getStats(): {
+        activities: { classes: number; methods: number; total: number };
+        schedules: number;
+        discoveries: DiscoveryStats;
+        worker: WorkerStatus;
+        client: ServiceHealth;
+    } {
+        this.ensureInitialized();
+
+        return {
+            activities: this.getActivityCount(),
+            schedules: this.getScheduleCount(),
+            discoveries: this.discoveryService.getStats(),
+            worker: this.workerService.getWorkerStatus(),
+            client: this.getClientHealth(),
+        };
+    }
+
+    /**
+     * Log current service status
+     */
+    private logServiceStatus(): void {
+        const health = this.getHealth();
+        const stats = this.getStats();
+
+        this.temporalLogger.debug(`Service Status - Overall: ${health.status}`);
+        this.temporalLogger.debug(
+            `Client: ${health.services.client.status}, Worker: ${health.services.worker.status}`,
+        );
+        this.temporalLogger.debug(
+            `Activities: ${stats.activities.total}, Schedules: ${stats.schedules}`,
+        );
+        this.temporalLogger.debug(`Namespace: ${health.namespace}`);
+    }
+
+    /**
+     * Ensure service is initialized
+     */
+    private ensureInitialized(): void {
+        if (!this.isInitialized) {
+            throw new Error('Temporal Service is not initialized');
         }
+    }
+
+    /**
+     * Enhance workflow options with default task queue if not provided
+     */
+    private enhanceWorkflowOptions(options: WorkflowStartOptions): WorkflowStartOptions {
+        if (!options.taskQueue) {
+            options.taskQueue = this.options.taskQueue || DEFAULT_TASK_QUEUE;
+        }
+        return options;
     }
 
     /**
      * Log initialization summary
      */
     private async logInitializationSummary(): Promise<void> {
-        const discoveryStats = this.getDiscoveryStats();
+        try {
+            const stats = this.discoveryService.getStats();
+            this.logger.log(
+                `Discovery: ${stats.controllers} controllers, ${stats.methods} methods, ${stats.signals} signals, ${stats.queries} queries, ${stats.workflows} workflows, ${stats.childWorkflows} child workflows`,
+            );
 
-        this.logger.log('Temporal Service initialized successfully');
-        this.logger.log(
-            `Discovery: ${discoveryStats.controllers} controllers, ${discoveryStats.workflows} workflows`,
-        );
-        this.logger.log(`Worker: ${this.hasWorker() ? 'available' : 'not available'}`);
+            if (this.hasWorker()) {
+                this.logger.log('Worker: available');
+            } else {
+                this.logger.log('Worker: not available');
+            }
+        } catch (error) {
+            this.logger.warn('Could not log initialization summary:', error);
+        }
+    }
+
+    /**
+     * Get client health status
+     */
+    private getClientHealth(): { status: 'healthy' | 'unhealthy' | 'degraded' } {
+        const isHealthy = this.clientService.isHealthy();
+        return { status: isHealthy ? 'healthy' : 'unhealthy' };
+    }
+
+    /**
+     * Get worker health status
+     */
+    private getWorkerHealthStatus(): {
+        status: 'healthy' | 'unhealthy' | 'degraded';
+        details?: Record<string, unknown>;
+    } {
+        if (!this.workerService) {
+            return {
+                status: 'unhealthy' as const,
+                details: { error: 'Worker service not available' },
+            };
+        }
+        const workerStatus = this.workerService.getWorkerStatus();
+        return {
+            status: workerStatus.isHealthy ? 'healthy' : 'degraded',
+            details: workerStatus as unknown as Record<string, unknown>,
+        };
+    }
+
+    /**
+     * Get schedule health status
+     */
+    private getScheduleHealth(): {
+        status: 'healthy' | 'unhealthy' | 'degraded';
+        schedulesCount: number;
+    } {
+        const isHealthy = this.scheduleService.isHealthy();
+        const stats = this.scheduleService.getScheduleStats();
+        return { status: isHealthy ? 'healthy' : 'unhealthy', schedulesCount: stats.total };
+    }
+
+    /**
+     * Get activity health status
+     */
+    private getActivityHealth(): {
+        status: 'healthy' | 'unhealthy' | 'degraded';
+        activitiesCount: { total: number };
+    } {
+        const count = this.activityService.getActivityNames().length;
+        return { status: 'healthy', activitiesCount: { total: count } };
+    }
+
+    /**
+     * Get discovery health status
+     */
+    private getDiscoveryHealth(): { status: 'healthy' | 'unhealthy' | 'degraded' } {
+        const healthStatus = this.discoveryService.getHealthStatus();
+        return { status: healthStatus.status as 'healthy' | 'unhealthy' | 'degraded' };
+    }
+
+    /**
+     * Get activity count
+     */
+    private getActivityCount(): { classes: number; methods: number; total: number } {
+        const names = this.activityService.getActivityNames();
+        return { classes: names.length, methods: names.length, total: names.length };
+    }
+
+    /**
+     * Get schedule count
+     */
+    private getScheduleCount(): number {
+        const stats = this.scheduleService.getScheduleStats();
+        return stats.total;
+    }
+
+    // =================== CONVENIENCE METHODS ===================
+
+    /**
+     * Get the client service instance
+     * @deprecated Use client property instead
+     */
+    getClient(): TemporalClientService {
+        this.ensureInitialized();
+        return this.clientService;
+    }
+
+    /**
+     * Get the client service instance
+     */
+    get client(): TemporalClientService {
+        this.ensureInitialized();
+        return this.clientService;
+    }
+
+    /**
+     * Get the worker service instance
+     * @deprecated Use worker property instead
+     */
+    getWorkerManager(): TemporalWorkerManagerService | undefined {
+        this.ensureInitialized();
+        return this.workerService || undefined;
+    }
+
+    /**
+     * Get the worker service instance
+     */
+    get worker(): TemporalWorkerManagerService {
+        this.ensureInitialized();
+        return this.workerService;
+    }
+
+    /**
+     * Get the schedule service instance
+     */
+    get schedule(): TemporalScheduleService {
+        this.ensureInitialized();
+        return this.scheduleService;
+    }
+
+    /**
+     * Get the activity service instance
+     */
+    get activity(): TemporalActivityService {
+        this.ensureInitialized();
+        return this.activityService;
+    }
+
+    /**
+     * Get the discovery service instance
+     * @deprecated Use discovery property instead
+     */
+    getDiscoveryService(): TemporalDiscoveryService {
+        this.ensureInitialized();
+        return this.discoveryService;
+    }
+
+    /**
+     * Get the discovery service instance
+     */
+    get discovery(): TemporalDiscoveryService {
+        this.ensureInitialized();
+        return this.discoveryService;
+    }
+
+    /**
+     * Get the metadata accessor instance
+     */
+    get metadata(): TemporalMetadataAccessor {
+        return this.metadataAccessor;
+    }
+
+    /**
+     * Extract error message from various error types
+     */
+    private extractErrorMessage(error: unknown): string {
+        if (error instanceof Error) {
+            return error.message;
+        }
+        if (typeof error === 'string') {
+            return error;
+        }
+        return 'Unknown error';
     }
 }

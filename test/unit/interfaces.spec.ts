@@ -37,7 +37,7 @@ describe('Interfaces', () => {
             taskQueue: 'test-queue',
         };
 
-        expect(options.connection.address).toBe('localhost:7233');
+        expect(options.connection!.address).toBe('localhost:7233');
         expect(options.taskQueue).toBe('test-queue');
     });
 
@@ -58,12 +58,12 @@ describe('Interfaces', () => {
     });
 
     it('should support workflow-related interfaces', () => {
-        const workflowOptions: interfaces.WorkflowOptions = {
-            name: 'testWorkflow',
-            description: 'Test workflow description',
+        const workflowOptions: interfaces.StartWorkflowOptions = {
+            taskQueue: 'test-queue',
+            workflowId: 'testWorkflow',
         };
-        expect(workflowOptions.name).toBe('testWorkflow');
-        expect(workflowOptions.description).toBe('Test workflow description');
+        expect(workflowOptions.workflowId).toBe('testWorkflow');
+        expect(workflowOptions.taskQueue).toBe('test-queue');
 
         const startOptions: interfaces.StartWorkflowOptions = {
             taskQueue: 'test-queue',
@@ -137,18 +137,12 @@ describe('Interfaces', () => {
     });
 
     it('should support workflow metadata interfaces', () => {
-        const workflowMeta: interfaces.WorkflowMetadata = {
-            name: 'TestWorkflow',
-            description: 'desc',
-            className: 'TestWorkflowClass',
+        const workflowMeta: interfaces.ChildWorkflowMetadata = {
+            workflowType: class TestWorkflow {},
+            propertyKey: 'testWorkflow',
         };
-        expect(workflowMeta.name).toBe('TestWorkflow');
-        expect(workflowMeta.className).toBe('TestWorkflowClass');
-
-        const runMeta: interfaces.WorkflowRunMetadata = {
-            methodName: 'run',
-        };
-        expect(runMeta.methodName).toBe('run');
+        expect(workflowMeta.propertyKey).toBe('testWorkflow');
+        expect(workflowMeta.workflowType).toBeDefined();
 
         const signalMeta: interfaces.SignalMethodMetadata = {
             signalName: 'mySignal',

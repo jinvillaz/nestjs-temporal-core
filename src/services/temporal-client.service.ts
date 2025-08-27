@@ -1,419 +1,426 @@
-import { Inject, Injectable, OnModuleInit } from '@nestjs/common';
-import { Client, WorkflowClient, WorkflowHandle } from '@temporalio/client';
+import { Injectable, OnModuleInit, Inject } from '@nestjs/common';
+import { Client, WorkflowHandle, WorkflowClient } from '@temporalio/client';
 import { TEMPORAL_CLIENT, TEMPORAL_MODULE_OPTIONS } from '../constants';
-import { StartWorkflowOptions } from '../interfaces';
+import { TemporalOptions, WorkflowStartOptions } from '../interfaces';
 import { createLogger, TemporalLogger } from '../utils/logger';
 
 /**
- * Provides client-side operations for interacting with Temporal workflows.
+ * Temporal Client Service
  *
- * This service handles workflow lifecycle management including starting, signaling,
- * querying, terminating, and canceling workflows. It provides a high-level interface
- * to the Temporal client SDK with proper error handling and logging.
- *
- * Key features:
- * - Workflow execution management (start, signal, query, terminate, cancel)
- * - Workflow handle management and retrieval
- * - Workflow listing and description
+ * Provides a clean interface for Temporal client operations including:
+ * - Workflow execution (start, terminate, cancel)
+ * - Signal and query operations
+ * - Workflow handle management
  * - Client health monitoring
- * - Automatic workflow ID generation
- * - Comprehensive error handling and logging
  *
  * @example
  * ```typescript
  * // Start a workflow
- * const { workflowId, result } = await clientService.startWorkflow(
- *   'processOrder',
- *   [orderId, customerId],
- *   { taskQueue: 'orders', workflowId: 'order-123' }
- * );
+ * const handle = await clientService.startWorkflow('myWorkflow', { data: 'example' });
  *
- * // Send a signal to a workflow
- * await clientService.signalWorkflow('order-123', 'updateStatus', ['shipped']);
+ * // Send a signal
+ * await clientService.signalWorkflow(handle, 'updateData', 'new data');
  *
  * // Query workflow state
- * const status = await clientService.queryWorkflow('order-123', 'getStatus');
+ * const result = await clientService.queryWorkflow(handle, 'getStatus');
  * ```
  */
 @Injectable()
 export class TemporalClientService implements OnModuleInit {
     private readonly logger: TemporalLogger;
-    private readonly workflowClient: WorkflowClient | null;
+    private client: Client | null = null;
+    private isInitialized = false;
+    private lastHealthCheck: Date | null = null;
+    private healthCheckInterval: number = 30000; // 30 seconds
 
     constructor(
         @Inject(TEMPORAL_CLIENT)
-        private readonly client: Client | null,
+        private readonly temporalClient: Client | null,
         @Inject(TEMPORAL_MODULE_OPTIONS)
-        private readonly options: Record<string, unknown>,
+        private readonly options: TemporalOptions,
     ) {
-        this.workflowClient = this.client?.workflow || null;
-        this.logger = createLogger(TemporalClientService.name);
+        this.logger = createLogger(TemporalClientService.name, {
+            enableLogger: options.enableLogger,
+            logLevel: options.logLevel,
+        });
     }
 
-    /**
-     * Initializes the client service during module initialization.
-     * Logs initialization status and warns if client is not available.
-     * Performs basic connection health check if client is available.
-     */
-    async onModuleInit() {
-        if (!this.client) {
-            this.logger.warn(
-                'Temporal client not initialized - workflow operations will be unavailable. ' +
-                    'Check connection configuration and ensure Temporal server is accessible.',
-            );
-        } else {
-            try {
-                // Perform a basic health check by trying to access the workflow client
-                const workflowClient = this.client.workflow;
-                if (workflowClient) {
-                    this.logger.log('Temporal client initialized successfully');
-                } else {
-                    this.logger.warn(
-                        'Temporal client initialized but workflow service is unavailable',
-                    );
-                }
-            } catch (error) {
-                this.logger.error(
-                    'Temporal client initialized but connection validation failed:',
-                    (error as Error).message,
-                );
-            }
-        }
-    }
-
-    /**
-     * Starts a new workflow execution with the specified type and arguments.
-     *
-     * @param workflowType - The name of the workflow type to start
-     * @param args - Arguments to pass to the workflow
-     * @param options - Workflow execution options including task queue and workflow ID
-     * @returns Promise resolving to workflow execution details including handle and result
-     * @throws Error when Temporal client is not initialized or connection fails
-     * @throws Error when workflow type is not found or not registered with workers
-     * @throws Error when task queue is invalid or not available
-     * @throws Error when workflow ID conflicts with existing workflow
-     * @throws Error when workflow arguments are invalid or serialization fails
-     *
-     * @example
-     * ```typescript
-     * const { workflowId, result } = await startWorkflow(
-     *   'processPayment',
-     *   [paymentId, amount],
-     *   { taskQueue: 'payments', workflowId: 'payment-123' }
-     * );
-     * ```
-     */
-    async startWorkflow<T, A extends unknown[]>(
-        workflowType: string,
-        args: A,
-        options: StartWorkflowOptions,
-    ): Promise<{
-        result: Promise<T>;
-        workflowId: string;
-        firstExecutionRunId: string;
-        handle: WorkflowHandle;
-    }> {
-        this.ensureClientInitialized();
-        const {
-            taskQueue,
-            workflowId = this.generateWorkflowId(workflowType),
-            signal,
-            ...restOptions
-        } = options;
+    async onModuleInit(): Promise<void> {
         try {
-            const handle = await this.workflowClient!.start(workflowType, {
-                taskQueue,
-                workflowId,
-                args,
-                ...restOptions,
-            });
-            if (signal) {
-                await handle.signal(signal.name, ...(signal.args || []));
+            this.client = this.temporalClient;
+
+            if (this.client) {
+                this.isInitialized = true;
+                this.logger.info('Temporal client service initialized successfully');
+                this.logger.debug(
+                    `Client namespace: ${this.options?.connection?.namespace || 'default'}`,
+                );
+
+                // Perform initial health check
+                await this.performHealthCheck();
+            } else {
+                this.logger.warn('No Temporal client available - running in client-less mode');
             }
-            this.logger.debug(`Started workflow '${workflowType}' with ID: ${workflowId}`);
-            return {
-                result: handle.result() as Promise<T>,
-                workflowId: handle.workflowId,
-                firstExecutionRunId: handle.firstExecutionRunId,
-                handle,
-            };
         } catch (error) {
-            this.logger.error(
-                `Failed to start workflow '${workflowType}': ${(error as Error).message}`,
+            this.logger.error('Failed to initialize Temporal client service', error);
+            throw error;
+        }
+    }
+
+    // ==========================================
+    // Workflow Operations
+    // ==========================================
+
+    /**
+     * Start a new workflow execution
+     */
+    async startWorkflow(
+        workflowType: string,
+        args: unknown[] = [],
+        options?: WorkflowStartOptions & { signal?: { name: string; args?: unknown[] } },
+    ): Promise<any> {
+        this.ensureClientAvailable();
+
+        const workflowId = options?.workflowId || this.generateWorkflowId(workflowType);
+        const taskQueue = options?.taskQueue || this.options.taskQueue || 'default';
+
+        try {
+            const handle = await this.client!.workflow.start(workflowType, {
+                workflowId,
+                taskQueue,
+                args,
+                searchAttributes: options?.searchAttributes as any,
+                memo: options?.memo,
+            } as any);
+
+            // Send initial signal if provided
+            if (options?.signal?.name) {
+                if (options.signal.args && options.signal.args.length > 0) {
+                    await (handle as any).signal(options.signal.name, ...options.signal.args);
+                } else {
+                    await (handle as any).signal(options.signal.name);
+                }
+            }
+
+            this.logger.info(
+                `Started workflow: ${workflowType} [${workflowId}] on queue: ${taskQueue}`,
             );
-            throw new Error(
-                `Failed to start workflow '${workflowType}': ${(error as Error).message}`,
-            );
+            return { ...(handle as any), handle };
+        } catch (error) {
+            const message = this.extractErrorMessage(error);
+            this.logger.error(`Failed to start workflow '${workflowType}': ${message}`, error);
+            throw new Error(`Failed to start workflow '${workflowType}': ${message}`);
         }
     }
 
     /**
-     * Sends a signal to a running workflow to update its state or trigger actions.
-     *
-     * @param workflowId - The ID of the workflow to signal
-     * @param signalName - The name of the signal to send
-     * @param args - Arguments to pass with the signal
-     * @throws Error when Temporal client is not initialized or connection fails
-     * @throws Error when workflow is not found, completed, or failed
-     * @throws Error when signal name is not defined in the workflow
-     * @throws Error when signal arguments are invalid or serialization fails
-     *
-     * @example
-     * ```typescript
-     * await signalWorkflow('order-123', 'updateInventory', [itemId, quantity]);
-     * ```
+     * Get handle to an existing workflow
+     */
+    async getWorkflowHandle(workflowId: string, runId?: string): Promise<WorkflowHandle> {
+        this.ensureClientAvailable();
+
+        try {
+            const handle = await (this.client as Client).workflow.getHandle(workflowId, runId);
+            this.logger.debug(
+                `Retrieved workflow handle: ${workflowId}${runId ? ` (run: ${runId})` : ''}`,
+            );
+            return handle as any;
+        } catch (error) {
+            const message = this.extractErrorMessage(error);
+            this.logger.error(`Failed to get workflow handle for ${workflowId}: ${message}`, error);
+            throw new Error(`Failed to get workflow handle for ${workflowId}: ${message}`);
+        }
+    }
+
+    /**
+     * Terminate a workflow execution
+     */
+    async terminateWorkflow(workflowId: string, reason?: string, runId?: string): Promise<void> {
+        try {
+            const handle = await this.getWorkflowHandle(workflowId, runId);
+            await (handle as any).terminate(reason);
+
+            this.logger.info(`Terminated workflow: ${workflowId}${reason ? ` (${reason})` : ''}`);
+        } catch (error) {
+            const message = this.extractErrorMessage(error);
+            this.logger.error(`Failed to terminate workflow ${workflowId}: ${message}`, error);
+            throw new Error(`Failed to terminate workflow ${workflowId}: ${message}`);
+        }
+    }
+
+    /**
+     * Cancel a workflow execution
+     */
+    async cancelWorkflow(workflowId: string, runId?: string): Promise<void> {
+        try {
+            const handle = await this.getWorkflowHandle(workflowId, runId);
+            await (handle as any).cancel();
+
+            this.logger.info(`Cancelled workflow: ${workflowId}`);
+        } catch (error) {
+            const message = this.extractErrorMessage(error);
+            this.logger.error(`Failed to cancel workflow ${workflowId}: ${message}`, error);
+            throw new Error(`Failed to cancel workflow ${workflowId}: ${message}`);
+        }
+    }
+
+    // ==========================================
+    // Signal Operations
+    // ==========================================
+
+    /**
+     * Send a signal to a workflow
      */
     async signalWorkflow(
         workflowId: string,
         signalName: string,
-        args: unknown[] = [],
+        args?: unknown[],
+        runId?: string,
     ): Promise<void> {
-        this.ensureClientInitialized();
         try {
-            const handle = await this.workflowClient!.getHandle(workflowId);
-            await handle.signal(signalName, ...args);
+            const handle = await this.getWorkflowHandle(workflowId, runId);
+            await (handle as any).signal(signalName, ...(args || []));
+
             this.logger.debug(`Sent signal '${signalName}' to workflow: ${workflowId}`);
         } catch (error) {
+            const message = this.extractErrorMessage(error);
             this.logger.error(
-                `Failed to send signal '${signalName}' to workflow ${workflowId}: ${(error as Error).message}`,
+                `Failed to send signal '${signalName}' to workflow ${workflowId}: ${message}`,
+                error,
             );
             throw new Error(
-                `Failed to send signal '${signalName}' to workflow ${workflowId}: ${(error as Error).message}`,
+                `Failed to send signal '${signalName}' to workflow ${workflowId}: ${message}`,
             );
         }
     }
 
     /**
-     * Queries a workflow's current state without affecting its execution.
-     *
-     * @param workflowId - The ID of the workflow to query
-     * @param queryName - The name of the query to execute
-     * @param args - Arguments to pass with the query
-     * @returns Promise resolving to the query result
-     * @throws Error when Temporal client is not initialized or connection fails
-     * @throws Error when workflow is not found, completed, or failed
-     * @throws Error when query name is not defined in the workflow
-     * @throws Error when query arguments are invalid or serialization fails
-     *
-     * @example
-     * ```typescript
-     * const orderStatus = await queryWorkflow('order-123', 'getStatus');
-     * const orderDetails = await queryWorkflow('order-123', 'getOrderDetails', [includeItems]);
-     * ```
+     * Send a signal using workflow handle
      */
-    async queryWorkflow<T>(
+    async signalWorkflowHandle(
+        handle: WorkflowHandle,
+        signalName: string,
+        args?: unknown[],
+    ): Promise<void> {
+        try {
+            await (handle as any).signal(signalName, ...(args || []));
+            this.logger.debug(`Sent signal '${signalName}' to workflow handle`);
+        } catch (error) {
+            this.logger.error(
+                `Failed to send signal '${signalName}': ${this.extractErrorMessage(error)}`,
+                error,
+            );
+            throw error;
+        }
+    }
+
+    // ==========================================
+    // Query Operations
+    // ==========================================
+
+    /**
+     * Query a workflow for its current state
+     */
+    async queryWorkflow<T = any>(
         workflowId: string,
         queryName: string,
-        args: unknown[] = [],
+        args?: unknown[],
+        runId?: string,
     ): Promise<T> {
-        this.ensureClientInitialized();
         try {
-            const handle = await this.workflowClient!.getHandle(workflowId);
-            const result = await handle.query(queryName, ...args);
-            this.logger.debug(`Queried '${queryName}' on workflow ${workflowId}`);
+            const handle = await this.getWorkflowHandle(workflowId, runId);
+            const result = await (handle as any).query(queryName, ...(args || []));
+
+            this.logger.debug(`Queried '${queryName}' from workflow: ${workflowId}`);
+            return result as T;
+        } catch (error) {
+            const message = this.extractErrorMessage(error);
+            this.logger.error(
+                `Failed to query '${queryName}' on workflow ${workflowId}: ${message}`,
+                error,
+            );
+            throw new Error(`Failed to query '${queryName}' on workflow ${workflowId}: ${message}`);
+        }
+    }
+
+    /**
+     * Query a workflow using handle
+     */
+    async queryWorkflowHandle<T = any>(
+        handle: WorkflowHandle,
+        queryName: string,
+        args?: unknown[],
+    ): Promise<T> {
+        try {
+            const result = await (handle as any).query(queryName, ...(args || []));
+            this.logger.debug(`Queried '${queryName}' from workflow handle`);
             return result as T;
         } catch (error) {
             this.logger.error(
-                `Failed to query '${queryName}' on workflow ${workflowId}: ${(error as Error).message}`,
+                `Failed to query '${queryName}': ${this.extractErrorMessage(error)}`,
+                error,
             );
-            throw new Error(
-                `Failed to query '${queryName}' on workflow ${workflowId}: ${(error as Error).message}`,
+            throw error;
+        }
+    }
+
+    // ==========================================
+    // Workflow Result Operations
+    // ==========================================
+
+    /**
+     * Wait for workflow completion and get result
+     */
+    async getWorkflowResult<T = any>(workflowId: string, runId?: string): Promise<T> {
+        try {
+            const handle = await this.getWorkflowHandle(workflowId, runId);
+            const result = await (handle as any).result();
+
+            this.logger.debug(`Retrieved result from workflow: ${workflowId}`);
+            return result as T;
+        } catch (error) {
+            this.logger.error(
+                `Failed to get result from ${workflowId}: ${this.extractErrorMessage(error)}`,
+                error,
             );
+            throw error;
         }
     }
 
     /**
-     * Terminates a running workflow, stopping its execution immediately.
-     *
-     * @param workflowId - The ID of the workflow to terminate
-     * @param reason - Optional reason for termination
-     * @throws Error when Temporal client is not initialized or connection fails
-     * @throws Error when workflow is not found or already completed/terminated
-     *
-     * @example
-     * ```typescript
-     * await terminateWorkflow('order-123', 'Order cancelled by customer');
-     * ```
-     */
-    async terminateWorkflow(workflowId: string, reason?: string): Promise<void> {
-        this.ensureClientInitialized();
-        try {
-            const handle = await this.workflowClient!.getHandle(workflowId);
-            await handle.terminate(reason);
-            this.logger.log(`Terminated workflow ${workflowId}${reason ? `: ${reason}` : ''}`);
-        } catch (error) {
-            this.logger.error(`Failed to terminate workflow ${workflowId}: ${error.message}`);
-            throw new Error(`Failed to terminate workflow ${workflowId}: ${error.message}`);
-        }
-    }
-
-    /**
-     * Cancels a running workflow, requesting it to stop gracefully.
-     *
-     * @param workflowId - The ID of the workflow to cancel
-     * @throws Error when Temporal client is not initialized or connection fails
-     * @throws Error when workflow is not found or already completed/cancelled
-     *
-     * @example
-     * ```typescript
-     * await cancelWorkflow('order-123');
-     * ```
-     */
-    async cancelWorkflow(workflowId: string): Promise<void> {
-        this.ensureClientInitialized();
-        try {
-            const handle = await this.workflowClient!.getHandle(workflowId);
-            await handle.cancel();
-            this.logger.log(`Cancelled workflow ${workflowId}`);
-        } catch (error) {
-            this.logger.error(`Failed to cancel workflow ${workflowId}: ${error.message}`);
-            throw new Error(`Failed to cancel workflow ${workflowId}: ${error.message}`);
-        }
-    }
-
-    /**
-     * Returns a workflow handle for interacting with a running workflow.
-     *
-     * @param workflowId - The ID of the workflow
-     * @param runId - Optional run ID for a specific execution
-     * @returns Promise resolving to the workflow handle
-     * @throws Error when Temporal client is not initialized or connection fails
-     * @throws Error when workflow is not found or run ID is invalid
-     *
-     * @example
-     * ```typescript
-     * const handle = await getWorkflowHandle('order-123');
-     * const result = await handle.result();
-     * ```
-     */
-    async getWorkflowHandle(workflowId: string, runId?: string): Promise<WorkflowHandle> {
-        this.ensureClientInitialized();
-        try {
-            return await this.workflowClient!.getHandle(workflowId, runId);
-        } catch (error) {
-            this.logger.error(`Failed to get workflow handle for ${workflowId}: ${error.message}`);
-            throw new Error(`Failed to get workflow handle for ${workflowId}: ${error.message}`);
-        }
-    }
-
-    /**
-     * Describes a workflow execution, returning detailed information about its state.
-     *
-     * @param workflowId - The ID of the workflow to describe
-     * @param runId - Optional run ID for a specific execution
-     * @returns Promise resolving to workflow description
-     * @throws Error when Temporal client is not initialized or connection fails
-     * @throws Error when workflow is not found or run ID is invalid
-     *
-     * @example
-     * ```typescript
-     * const description = await describeWorkflow('order-123');
-     * console.log('Workflow status:', description.status);
-     * ```
+     * Describe workflow execution
      */
     async describeWorkflow(workflowId: string, runId?: string) {
-        this.ensureClientInitialized();
         try {
-            const handle = await this.workflowClient!.getHandle(workflowId, runId);
-            return await handle.describe();
+            const handle = await this.getWorkflowHandle(workflowId, runId);
+            const description = await (handle as any).describe();
+
+            this.logger.debug(`Retrieved description for workflow: ${workflowId}`);
+            return description;
         } catch (error) {
-            this.logger.error(`Failed to describe workflow ${workflowId}: ${error.message}`);
-            throw new Error(`Failed to describe workflow ${workflowId}: ${error.message}`);
+            const message = this.extractErrorMessage(error);
+            this.logger.error(`Failed to describe workflow ${workflowId}: ${message}`, error);
+            throw new Error(`Failed to describe workflow ${workflowId}: ${message}`);
         }
     }
 
-    /**
-     * Lists workflows matching a query with pagination support.
-     *
-     * @param query - Query string to filter workflows
-     * @param pageSize - Number of results per page (default: 100)
-     * @returns Async iterator of workflow descriptions
-     * @throws Error when Temporal client is not initialized or connection fails
-     * @throws Error when query syntax is invalid or malformed
-     * @throws Error when page size exceeds server limits
-     *
-     * @example
-     * ```typescript
-     * const workflows = listWorkflows('WorkflowType="processOrder"');
-     * for await (const workflow of workflows) {
-     *   console.log('Workflow:', workflow.workflowId);
-     * }
-     * ```
-     */
-    listWorkflows(query: string, pageSize = 100) {
-        this.ensureClientInitialized();
+    // ==========================================
+    // Listing and Client Access
+    // ==========================================
+
+    listWorkflows(query: string, pageSize = 100): unknown {
+        this.ensureClientAvailable();
         try {
-            return this.workflowClient!.list({ query, pageSize });
+            return (this.client as any).workflow.list({ query, pageSize });
         } catch (error) {
-            this.logger.error(`Failed to list workflows with query '${query}': ${error.message}`);
-            throw new Error(`Failed to list workflows with query '${query}': ${error.message}`);
+            const message = this.extractErrorMessage(error);
+            throw new Error(`Failed to list workflows with query '${query}': ${message}`);
         }
     }
 
-    /**
-     * Returns the Temporal workflow client instance for advanced operations.
-     *
-     * @returns The workflow client instance or null if not initialized
-     */
     getWorkflowClient(): WorkflowClient | null {
-        return this.workflowClient;
+        return (this.client && (this.client as any).workflow) || null;
+    }
+
+    // ==========================================
+    // Health and Status
+    // ==========================================
+
+    /**
+     * Check if client is available and healthy
+     */
+    isHealthy(): boolean {
+        if (!this.isInitialized || !this.client) {
+            return false;
+        }
+
+        // Check if health check is due
+        const now = new Date();
+        if (
+            !this.lastHealthCheck ||
+            now.getTime() - this.lastHealthCheck.getTime() > this.healthCheckInterval
+        ) {
+            // Perform async health check
+            this.performHealthCheck().catch((error) => {
+                this.logger.warn('Health check failed', error);
+            });
+        }
+
+        return Boolean((this.client as any).workflow);
     }
 
     /**
-     * Returns the raw Temporal client instance for low-level operations.
-     *
-     * @returns The raw client instance or null if not initialized
+     * Get client health status
+     */
+    getHealth(): { status: 'healthy' | 'unhealthy' | 'degraded' } {
+        return { status: this.isHealthy() ? 'healthy' : 'unhealthy' };
+    }
+
+    /**
+     * Get client status for monitoring
+     */
+    getStatus() {
+        return {
+            available: this.client !== null,
+            healthy: this.isHealthy(),
+            initialized: this.isInitialized,
+            lastHealthCheck: this.lastHealthCheck,
+            namespace: this.options.connection?.namespace || 'default',
+        };
+    }
+
+    /**
+     * Get raw Temporal client (use with caution)
      */
     getRawClient(): Client | null {
         return this.client;
     }
 
     /**
-     * Checks if the client is available and healthy.
-     *
-     * @returns True if both client and workflow client are initialized
+     * Perform health check on the client
      */
-    isHealthy(): boolean {
-        return Boolean(this.client && this.workflowClient);
+    private async performHealthCheck(): Promise<void> {
+        if (!this.client) {
+            return;
+        }
+
+        try {
+            // Simple health check - try to access workflow property
+            const hasWorkflow = Boolean((this.client as any).workflow);
+            if (hasWorkflow) {
+                this.lastHealthCheck = new Date();
+                this.logger.debug('Client health check passed');
+            } else {
+                this.logger.warn('Client health check failed - workflow property not available');
+            }
+        } catch (error) {
+            this.logger.warn('Client health check failed', error);
+        }
     }
 
-    /**
-     * Returns client status information for monitoring and debugging.
-     *
-     * @returns Object containing client availability and health status
-     */
-    getStatus(): {
-        available: boolean;
-        healthy: boolean;
-        connection?: string;
-        namespace?: string;
-    } {
-        return {
-            available: Boolean(this.client),
-            healthy: this.isHealthy(),
-        };
-    }
+    // ==========================================
+    // Private Helper Methods
+    // ==========================================
 
-    /**
-     * Ensures the workflow client is initialized before operations.
-     *
-     * @throws Error if workflow client is not initialized
-     */
-    private ensureClientInitialized(): void {
-        if (!this.workflowClient) {
+    private ensureClientAvailable(): void {
+        if (!this.client) {
             throw new Error('Temporal client not initialized');
         }
     }
 
-    /**
-     * Generates a unique workflow ID for a given workflow type.
-     *
-     * @param workflowType - The workflow type name
-     * @returns A unique workflow ID with timestamp and random suffix
-     */
     private generateWorkflowId(workflowType: string): string {
         const timestamp = Date.now();
-        const random = Math.random().toString(36).slice(2);
+        const random = Math.random().toString(36).substring(2, 8);
         return `${workflowType}-${timestamp}-${random}`;
+    }
+
+    private extractErrorMessage(error: unknown): string {
+        if (error instanceof Error) {
+            return error.message;
+        }
+        if (typeof error === 'string') {
+            return error;
+        }
+        return 'Unknown error';
     }
 }

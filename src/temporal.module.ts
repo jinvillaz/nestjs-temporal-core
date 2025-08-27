@@ -1,14 +1,19 @@
 import { DynamicModule, Module, Provider, Type, ForwardReference } from '@nestjs/common';
 import { DiscoveryModule } from '@nestjs/core';
 import { TemporalService } from './services/temporal.service';
-import { ACTIVITY_MODULE_OPTIONS, TEMPORAL_CLIENT, TEMPORAL_MODULE_OPTIONS } from './constants';
+import {
+    ACTIVITY_MODULE_OPTIONS,
+    TEMPORAL_CLIENT,
+    TEMPORAL_CONNECTION,
+    TEMPORAL_MODULE_OPTIONS,
+} from './constants';
 import { TemporalDiscoveryService } from './services/temporal-discovery.service';
 import { TemporalClientService } from './services/temporal-client.service';
 import { TemporalScheduleService } from './services/temporal-schedule.service';
 import { TemporalWorkerManagerService } from './services/temporal-worker.service';
 import { TemporalActivityService } from './services/temporal-activity.service';
 import { TemporalMetadataAccessor } from './services/temporal-metadata.service';
-import { TemporalLoggerManager } from './utils/logger';
+import { TemporalLoggerManager, createLogger, LoggerUtils } from './utils/logger';
 import { TemporalOptions } from './interfaces';
 import { TemporalAsyncOptions, TemporalOptionsFactory } from './interfaces';
 
@@ -57,13 +62,11 @@ import { TemporalAsyncOptions, TemporalOptionsFactory } from './interfaces';
  */
 @Module({})
 export class TemporalModule {
-    static register(options: TemporalOptions): DynamicModule {
+    static register(options: Partial<TemporalOptions> = {}): DynamicModule {
         this.validateOptions(options);
 
         const imports: DynamicModule[] = [];
         const providers: Provider[] = [];
-
-        // Note: Client and worker functionality is now integrated into the main module
 
         // Core providers
         providers.push(
@@ -73,14 +76,31 @@ export class TemporalModule {
             },
             {
                 provide: TEMPORAL_CLIENT,
-                useFactory: async (temporalOptions: TemporalOptions) => {
+                useFactory: async (temporalOptions: Partial<TemporalOptions>) => {
+                    const logger = createLogger('TemporalModule:ClientFactory', {
+                        enableLogger: temporalOptions.enableLogger,
+                        logLevel: temporalOptions.logLevel,
+                    });
+
                     // Only create client if connection configuration is provided
                     if (!temporalOptions.connection) {
+                        logger.info(
+                            'No connection configuration provided - running without client',
+                        );
                         return null;
                     }
 
                     try {
-                        const { Client } = await import('@temporalio/client');
+                        logger.debug('Importing Temporal client SDK');
+                        const temporalClient = await import('@temporalio/client');
+
+                        if (!temporalClient || !temporalClient.Client) {
+                            throw new Error(
+                                'Failed to import Temporal client - module not available',
+                            );
+                        }
+
+                        const { Client } = temporalClient;
 
                         const clientOptions: Record<string, unknown> = {
                             connection: {
@@ -93,6 +113,7 @@ export class TemporalModule {
 
                         // Add API key authentication if provided
                         if (temporalOptions.connection.apiKey) {
+                            logger.debug('Adding API key authentication to client options');
                             clientOptions.connection = {
                                 ...(clientOptions.connection as Record<string, unknown>),
                                 metadata: {
@@ -102,17 +123,61 @@ export class TemporalModule {
                             };
                         }
 
-                        return new Client(clientOptions);
+                        logger.info(
+                            `Connecting to Temporal server at ${temporalOptions.connection.address}`,
+                        );
+                        logger.debug(`Client options: ${JSON.stringify(clientOptions, null, 2)}`);
+
+                        const client = new Client(clientOptions);
+                        LoggerUtils.logConnection(logger, temporalOptions.connection.address, true);
+                        return client;
                     } catch (error) {
-                        if (temporalOptions.allowConnectionFailure !== false) {
-                            // Logger not available during module initialization
-                            console.warn(
-                                'Temporal client initialization failed - continuing without client:',
-                                error,
-                            );
+                        const shouldAllowFailure = temporalOptions.allowConnectionFailure !== false;
+                        LoggerUtils.logConnection(
+                            logger,
+                            temporalOptions.connection?.address || 'unknown',
+                            false,
+                            error as Error,
+                        );
+
+                        if (shouldAllowFailure) {
+                            logger.warn('Continuing without client due to connection failure');
                             return null;
                         }
+                        logger.error('Client initialization failed - throwing error');
                         throw error;
+                    }
+                },
+                inject: [TEMPORAL_MODULE_OPTIONS],
+            },
+            {
+                provide: TEMPORAL_CONNECTION,
+                useFactory: async (temporalOptions: Partial<TemporalOptions>) => {
+                    const logger = createLogger('TemporalModule:ConnectionFactory', {
+                        enableLogger: temporalOptions.enableLogger,
+                        logLevel: temporalOptions.logLevel,
+                    });
+                    try {
+                        // Create a NativeConnection when connection options provided; otherwise null
+                        if (!temporalOptions.connection) return null;
+                        const { NativeConnection } = await import('@temporalio/worker');
+                        const address = temporalOptions.connection.address || 'localhost:7233';
+                        const connectOptions: any = {
+                            address,
+                            tls: temporalOptions.connection.tls,
+                        };
+                        if (temporalOptions.connection.apiKey) {
+                            connectOptions.metadata = {
+                                ...(temporalOptions.connection.metadata || {}),
+                                authorization: `Bearer ${temporalOptions.connection.apiKey}`,
+                            };
+                        }
+                        logger.debug(`Creating NativeConnection to ${address}`);
+                        const connection = await NativeConnection.connect(connectOptions);
+                        return connection;
+                    } catch (error) {
+                        logger.warn('Failed to create TEMPORAL_CONNECTION, returning null');
+                        return null;
                     }
                 },
                 inject: [TEMPORAL_MODULE_OPTIONS],
@@ -198,14 +263,31 @@ export class TemporalModule {
         providers.push(
             {
                 provide: TEMPORAL_CLIENT,
-                useFactory: async (temporalOptions: TemporalOptions) => {
+                useFactory: async (temporalOptions: Partial<TemporalOptions>) => {
+                    const logger = createLogger('TemporalModule:AsyncClientFactory', {
+                        enableLogger: temporalOptions.enableLogger,
+                        logLevel: temporalOptions.logLevel,
+                    });
+
                     // Only create client if connection configuration is provided
                     if (!temporalOptions.connection) {
+                        logger.info(
+                            'No connection configuration provided - running without client',
+                        );
                         return null;
                     }
 
                     try {
-                        const { Client } = await import('@temporalio/client');
+                        logger.debug('Importing Temporal client SDK for async configuration');
+                        const temporalClient = await import('@temporalio/client');
+
+                        if (!temporalClient || !temporalClient.Client) {
+                            throw new Error(
+                                'Failed to import Temporal client - module not available',
+                            );
+                        }
+
+                        const { Client } = temporalClient;
 
                         const clientOptions: Record<string, unknown> = {
                             connection: {
@@ -218,6 +300,7 @@ export class TemporalModule {
 
                         // Add API key authentication if provided
                         if (temporalOptions.connection.apiKey) {
+                            logger.debug('Adding API key authentication to async client options');
                             clientOptions.connection = {
                                 ...(clientOptions.connection as Record<string, unknown>),
                                 metadata: {
@@ -227,24 +310,71 @@ export class TemporalModule {
                             };
                         }
 
-                        return new Client(clientOptions);
+                        logger.info(
+                            `Connecting to Temporal server at ${temporalOptions.connection.address} (async)`,
+                        );
+                        logger.debug(
+                            `Async client options: ${JSON.stringify(clientOptions, null, 2)}`,
+                        );
+
+                        const client = new Client(clientOptions);
+                        LoggerUtils.logConnection(logger, temporalOptions.connection.address, true);
+                        return client;
                     } catch (error) {
-                        if (temporalOptions.allowConnectionFailure !== false) {
-                            // Logger not available during module initialization
-                            console.warn(
-                                'Temporal client initialization failed - continuing without client:',
-                                error,
+                        const shouldAllowFailure = temporalOptions.allowConnectionFailure !== false;
+                        LoggerUtils.logConnection(
+                            logger,
+                            temporalOptions.connection?.address || 'unknown',
+                            false,
+                            error as Error,
+                        );
+
+                        if (shouldAllowFailure) {
+                            logger.warn(
+                                'Continuing without client due to async connection failure',
                             );
                             return null;
                         }
+                        logger.error('Async client initialization failed - throwing error');
                         throw error;
                     }
                 },
                 inject: [TEMPORAL_MODULE_OPTIONS],
             },
             {
+                provide: TEMPORAL_CONNECTION,
+                useFactory: async (temporalOptions: Partial<TemporalOptions>) => {
+                    const logger = createLogger('TemporalModule:AsyncConnectionFactory', {
+                        enableLogger: temporalOptions.enableLogger,
+                        logLevel: temporalOptions.logLevel,
+                    });
+                    try {
+                        if (!temporalOptions.connection) return null;
+                        const { NativeConnection } = await import('@temporalio/worker');
+                        const address = temporalOptions.connection.address || 'localhost:7233';
+                        const connectOptions: any = {
+                            address,
+                            tls: temporalOptions.connection.tls,
+                        };
+                        if (temporalOptions.connection.apiKey) {
+                            connectOptions.metadata = {
+                                ...(temporalOptions.connection.metadata || {}),
+                                authorization: `Bearer ${temporalOptions.connection.apiKey}`,
+                            };
+                        }
+                        logger.debug(`Creating NativeConnection to ${address} (async)`);
+                        const connection = await NativeConnection.connect(connectOptions);
+                        return connection;
+                    } catch (error) {
+                        logger.warn('Failed to create TEMPORAL_CONNECTION (async), returning null');
+                        return null;
+                    }
+                },
+                inject: [TEMPORAL_MODULE_OPTIONS],
+            },
+            {
                 provide: ACTIVITY_MODULE_OPTIONS,
-                useFactory: async (temporalOptions: TemporalOptions) => {
+                useFactory: async (temporalOptions: Partial<TemporalOptions>) => {
                     return {
                         activityClasses: temporalOptions.worker?.activityClasses || [],
                     };
@@ -253,7 +383,7 @@ export class TemporalModule {
             },
             {
                 provide: TemporalLoggerManager,
-                useFactory: async (temporalOptions: TemporalOptions) => {
+                useFactory: async (temporalOptions: Partial<TemporalOptions>) => {
                     const manager = TemporalLoggerManager.getInstance();
                     manager.configure({
                         enableLogger: temporalOptions.enableLogger,
@@ -293,17 +423,16 @@ export class TemporalModule {
     /**
      * Validate synchronous options
      */
-    private static validateOptions(options: TemporalOptions): void {
+    private static validateOptions(options: Partial<TemporalOptions>): void {
         if (!options) {
-            throw new Error('Temporal options are required');
+            return; // Allow empty options for minimal configuration
         }
 
-        if (!options.connection) {
-            throw new Error('Connection configuration is required');
-        }
-
-        if (!options.connection.address || !options.connection.address.trim()) {
-            throw new Error('Connection address is required');
+        // Validate connection configuration if provided
+        if (options.connection) {
+            if (!options.connection.address || !options.connection.address.trim()) {
+                throw new Error('Connection address is required when connection is configured');
+            }
         }
 
         // Validate worker configuration if provided
@@ -338,28 +467,5 @@ export class TemporalModule {
                 'Invalid Temporal module options: Cannot provide multiple configuration methods',
             );
         }
-    }
-
-    /**
-     * Create options from factory based on configuration type
-     */
-    private static async createOptionsFromFactory(
-        options: TemporalAsyncOptions,
-        args: unknown[],
-    ): Promise<TemporalOptions> {
-        if (options.useFactory) {
-            return await options.useFactory(...args);
-        }
-
-        if (options.useClass) {
-            const optionsFactory = new options.useClass() as TemporalOptionsFactory;
-            return await optionsFactory.createTemporalOptions();
-        }
-
-        if (options.useExisting) {
-            throw new Error('useExisting should be handled by dependency injection');
-        }
-
-        throw new Error('Invalid Temporal module options');
     }
 }
