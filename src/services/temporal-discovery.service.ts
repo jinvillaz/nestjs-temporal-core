@@ -1,363 +1,416 @@
-import { Injectable, OnModuleInit } from '@nestjs/common';
-import { DiscoveryService, MetadataScanner } from '@nestjs/core';
-import { InstanceWrapper } from '@nestjs/core/injector/instance-wrapper';
+import { Injectable, OnModuleInit, Inject, Optional } from '@nestjs/common';
+import { DiscoveryService } from '@nestjs/core';
+import { TEMPORAL_MODULE_OPTIONS } from '../constants';
 import {
-    TEMPORAL_WORKFLOW_RUN,
-    TEMPORAL_SIGNAL_METHOD,
-    TEMPORAL_QUERY_METHOD,
-    TEMPORAL_CHILD_WORKFLOW,
-} from '../constants';
-import {
+    TemporalOptions,
     DiscoveryStats,
-    QueryMethodInfo,
     SignalMethodInfo,
-    WorkflowRunInfo,
+    QueryMethodInfo,
     ChildWorkflowInfo,
 } from '../interfaces';
-import { createLogger } from '../utils/logger';
+import { createLogger, TemporalLogger } from '../utils/logger';
+import { TemporalMetadataAccessor } from './temporal-metadata.service';
 
 /**
- * Discovers and manages Temporal workflow components in a NestJS application.
+ * Temporal Discovery Service
  *
- * This service automatically discovers methods decorated with @Signal and @Query
- * decorators across all providers and controllers in the application. It provides metadata
- * access and management for these components.
+ * Automatically discovers and manages Temporal components including:
+ * - Activities with @Activity decorator
+ * - Signals with @SignalMethod decorator
+ * - Queries with @QueryMethod decorator
+ * - Child workflows with @ChildWorkflow decorator
  *
- * Key features:
- * - Automatic discovery of signals, queries, and workflow runs
- * - Metadata extraction and management
- * - Component validation and health monitoring
- * - Statistics and monitoring capabilities
- * - Fast lookup and retrieval of component information
- *
- * @example
- * ```typescript
- * // Get all signals
- * const signals = discoveryService.getSignals();
- *
- * // Check if a signal exists
- * const signal = discoveryService.getSignal('mySignal');
- *
- * // Get workflow names
- * const workflowNames = discoveryService.getWorkflowNames();
- *
- * // Get discovery statistics
- * const stats = discoveryService.getStats();
- * ```
+ * Provides introspection and statistics about discovered components.
  */
 @Injectable()
 export class TemporalDiscoveryService implements OnModuleInit {
-    private readonly logger = createLogger(TemporalDiscoveryService.name);
-    private readonly signals = new Map<string, SignalMethodInfo>();
-    private readonly queries = new Map<string, QueryMethodInfo>();
-    private readonly workflows = new Map<string, WorkflowRunInfo>();
-    private readonly childWorkflows = new Map<string | symbol, ChildWorkflowInfo>();
+    private readonly logger: TemporalLogger;
+    private readonly discoveredActivities = new Map<string, unknown>();
+    private readonly discoveredSignals = new Map<string, SignalMethodInfo>();
+    private readonly discoveredQueries = new Map<string, QueryMethodInfo>();
+    private readonly discoveredChildWorkflows = new Map<string, ChildWorkflowInfo>();
+    // Aliases for test cleanup compatibility
+    private signals: Map<string, SignalMethodInfo>;
+    private queries: Map<string, QueryMethodInfo>;
+    private childWorkflows: Map<string, ChildWorkflowInfo>;
+    private isDiscoveryComplete = false;
+    private discoveryStartTime: Date | null = null;
+    private lastDiscoveryTime: Date | null = null;
 
     constructor(
         private readonly discoveryService: DiscoveryService,
-        private readonly metadataScanner: MetadataScanner,
-    ) {}
-
-    /**
-     * Initializes the discovery service during module initialization.
-     * Discovers all components and logs the results.
-     */
-    async onModuleInit() {
-        await this.discoverComponents();
+        @Optional()
+        private readonly metadataAccessor: TemporalMetadataAccessor = new TemporalMetadataAccessor(),
+        @Inject(TEMPORAL_MODULE_OPTIONS)
+        private readonly options: TemporalOptions,
+    ) {
+        this.logger = createLogger(TemporalDiscoveryService.name, {
+            enableLogger: options.enableLogger,
+            logLevel: options.logLevel,
+        });
+        // initialize alias maps
+        this.signals = this.discoveredSignals;
+        this.queries = this.discoveredQueries;
+        this.childWorkflows = this.discoveredChildWorkflows as any;
     }
 
-    /**
-     * Discovers all scheduled workflows, signals, and queries in the application.
-     * Scans all providers and controllers for decorated methods.
-     */
-    private async discoverComponents(): Promise<void> {
-        const allWrappers = [
-            ...this.discoveryService.getProviders(),
-            ...this.discoveryService.getControllers(),
-        ];
-        for (const wrapper of allWrappers) {
-            await this.processWrapper(wrapper);
-        }
-        this.logDiscoveryResults();
-    }
-
-    /**
-     * Processes a single instance wrapper to discover its methods.
-     *
-     * @param wrapper - The instance wrapper to process
-     */
-    private async processWrapper(wrapper: InstanceWrapper): Promise<void> {
-        const { instance, metatype } = wrapper;
-        if (!instance || !metatype) return;
-        this.logger.debug(`Processing wrapper: ${metatype.name}`);
-        await this.discoverMethods(instance);
-    }
-
-    /**
-     * Discovers all decorated methods in a class instance.
-     *
-     * @param instance - The class instance to scan
-     */
-    private async discoverMethods(instance: object): Promise<void> {
+    async onModuleInit(): Promise<void> {
         try {
-            const prototype = Object.getPrototypeOf(instance);
-            const methodNames = this.metadataScanner
-                .scanFromPrototype(instance, prototype, (methodName) =>
-                    methodName !== 'constructor' ? methodName : null,
-                )
-                .filter((methodName): methodName is string => Boolean(methodName));
-            for (const methodName of methodNames) {
-                const method = prototype[methodName];
-                if (!method || typeof method !== 'function') continue;
-                this.categorizeMethod(instance, methodName, method);
-            }
-
-            // Child workflows - discover properties with child workflow metadata
-            const className = instance.constructor.name;
-            const propertyNames = Object.getOwnPropertyNames(instance);
-            for (const propertyKey of propertyNames) {
-                const childMeta = Reflect.getMetadata(
-                    TEMPORAL_CHILD_WORKFLOW,
-                    instance,
-                    propertyKey,
-                );
-                if (childMeta) {
-                    this.childWorkflows.set(propertyKey, {
-                        className,
-                        propertyKey,
-                        workflowType: childMeta.workflowType,
-                        options: childMeta.options,
-                        instance,
-                    });
-                }
-            }
+            this.logger.debug('Starting component discovery...');
+            this.discoveryStartTime = new Date();
+            await this.discoverComponents();
+            this.isDiscoveryComplete = true;
+            this.lastDiscoveryTime = new Date();
+            this.logDiscoveryResults();
         } catch (error) {
-            this.logger.warn(`Error during method discovery: ${error.message}`);
+            this.logger.error('Failed to complete component discovery', error);
+            throw error;
         }
     }
 
     /**
-     * Categorizes a method based on its decorators and stores the metadata.
-     *
-     * @param instance - The class instance containing the method
-     * @param methodName - The name of the method
-     * @param method - The method function
-     */
-    private categorizeMethod(instance: object, methodName: string, method: Function): void {
-        const className = instance.constructor.name;
-        const boundMethod = method.bind(instance);
-        const proto = Object.getPrototypeOf(instance);
-        // Workflow run
-        const workflowRunMeta = Reflect.getMetadata(TEMPORAL_WORKFLOW_RUN, method);
-        if (workflowRunMeta) {
-            this.workflows.set(methodName, {
-                className,
-                methodName,
-                handler: boundMethod,
-                instance,
-            });
-        }
-        // Signals
-        const signalMetadata = Reflect.getMetadata(TEMPORAL_SIGNAL_METHOD, proto) || {};
-        Object.entries(signalMetadata).forEach(([signalName, propKey]) => {
-            if (propKey === methodName) {
-                this.signals.set(signalName, {
-                    className,
-                    signalName,
-                    methodName,
-                    handler: boundMethod,
-                    instance,
-                    options: {},
-                });
-            }
-        });
-        // Queries
-        const queryMetadata = Reflect.getMetadata(TEMPORAL_QUERY_METHOD, proto) || {};
-        Object.entries(queryMetadata).forEach(([queryName, propKey]) => {
-            if (propKey === methodName) {
-                this.queries.set(queryName, {
-                    className,
-                    queryName,
-                    methodName,
-                    handler: boundMethod,
-                    instance,
-                    options: {},
-                });
-            }
-        });
-    }
-
-    /**
-     * Returns all discovered signals.
-     *
-     * @returns Array of signal method metadata
-     */
-    getSignals(): SignalMethodInfo[] {
-        return Array.from(this.signals.values());
-    }
-
-    /**
-     * Returns signal metadata by name.
-     *
-     * @param signalName - The name of the signal to retrieve
-     * @returns Signal metadata or undefined if not found
-     */
-    getSignal(signalName: string): SignalMethodInfo | undefined {
-        return this.signals.get(signalName);
-    }
-
-    /**
-     * Returns all discovered queries.
-     *
-     * @returns Array of query method metadata
-     */
-    getQueries(): QueryMethodInfo[] {
-        return Array.from(this.queries.values());
-    }
-
-    /**
-     * Returns query metadata by name.
-     *
-     * @param queryName - The name of the query to retrieve
-     * @returns Query metadata or undefined if not found
-     */
-    getQuery(queryName: string): QueryMethodInfo | undefined {
-        return this.queries.get(queryName);
-    }
-
-    /**
-     * Returns all discovered workflows.
-     *
-     * @returns Array of workflow run metadata
-     */
-    getWorkflows(): WorkflowRunInfo[] {
-        return Array.from(this.workflows.values());
-    }
-
-    /**
-     * Returns workflow run metadata by workflow name.
-     *
-     * @param workflowName - The name of the workflow to retrieve
-     * @returns Workflow run metadata or undefined if not found
-     */
-    getWorkflow(workflowName: string): WorkflowRunInfo | undefined {
-        return this.workflows.get(workflowName);
-    }
-
-    /**
-     * Returns all discovered child workflows.
-     *
-     * @returns Array of child workflow metadata
-     */
-    getChildWorkflows(): ChildWorkflowInfo[] {
-        return Array.from(this.childWorkflows.values());
-    }
-
-    /**
-     * Returns child workflow metadata by property key.
-     *
-     * @param propertyKey - The property key of the child workflow
-     * @returns Child workflow metadata or undefined if not found
-     */
-    getChildWorkflow(propertyKey: string | symbol): ChildWorkflowInfo | undefined {
-        return this.childWorkflows.get(propertyKey);
-    }
-
-    /**
-     * Returns discovery statistics for monitoring.
-     *
-     * @returns Object containing discovery statistics
+     * Get comprehensive discovery statistics
      */
     getStats(): DiscoveryStats {
         return {
-            controllers: 0,
-            methods: 0,
-            signals: this.signals.size,
-            queries: this.queries.size,
-            workflows: this.workflows.size,
-            childWorkflows: this.childWorkflows.size,
+            controllers: this.getDiscoveredControllersCount(),
+            methods: this.getDiscoveredMethodsCount(),
+            signals: this.discoveredSignals.size,
+            queries: this.discoveredQueries.size,
+            workflows: this.getDiscoveredWorkflowsCount(),
+            childWorkflows: this.discoveredChildWorkflows.size,
         };
     }
 
     /**
-     * Returns health status for monitoring.
-     *
-     * @returns Object containing health status and discovery information
+     * Get all discovered activities
      */
-    getHealthStatus(): {
-        status: 'healthy' | 'degraded';
-        discoveredItems: DiscoveryStats;
-        lastDiscovery: Date | null;
-    } {
-        const stats = this.getStats();
-        const status =
-            stats.signals > 0 ||
-            stats.queries > 0 ||
-            stats.workflows > 0 ||
-            stats.childWorkflows > 0
-                ? 'healthy'
-                : 'degraded';
-        return {
-            status,
-            discoveredItems: stats,
-            lastDiscovery: new Date(),
-        };
+    getDiscoveredActivities(): Map<string, unknown> {
+        return new Map(this.discoveredActivities);
     }
 
     /**
-     * Returns all unique workflow names from workflow runs.
-     *
-     * @returns Array of unique workflow names
+     * Get all discovered signals (as array for consumer friendliness)
+     */
+    getSignals(): Array<SignalMethodInfo> {
+        return Array.from(this.discoveredSignals.values());
+    }
+
+    /**
+     * Get a signal by name
+     */
+    getSignal(name: string): SignalMethodInfo | undefined {
+        return this.discoveredSignals.get(name);
+    }
+
+    /**
+     * Get all discovered queries (as array)
+     */
+    getQueries(): Array<QueryMethodInfo> {
+        return Array.from(this.discoveredQueries.values());
+    }
+
+    /**
+     * Get a query by name
+     */
+    getQuery(name: string): QueryMethodInfo | undefined {
+        return this.discoveredQueries.get(name);
+    }
+
+    /**
+     * Get all discovered child workflows (as array)
+     */
+    getChildWorkflows(): Array<ChildWorkflowInfo> {
+        return Array.from(this.discoveredChildWorkflows.values());
+    }
+
+    /**
+     * Get a specific child workflow by property key
+     */
+    getChildWorkflow(propertyKey: string): ChildWorkflowInfo | undefined {
+        // propertyKey is unique per class; we stored map by workflow name, so search values
+        return this.getChildWorkflows().find((cw) => cw.propertyKey === propertyKey);
+    }
+
+    /**
+     * Get all workflow names
      */
     getWorkflowNames(): string[] {
-        const names = new Set<string>();
-        for (const info of this.workflows.values()) {
-            if (info.methodName && info.methodName.trim()) {
-                names.add(info.methodName);
-            }
-        }
-        return Array.from(names);
+        // For now, return empty array - can be enhanced when workflow discovery is added
+        return [];
     }
 
     /**
-     * Checks if a workflow exists by workflow name.
-     *
-     * @param workflowName - The name of the workflow to check
-     * @returns True if the workflow exists
+     * Indicate if a workflow exists by name
      */
-    hasWorkflow(workflowName: string): boolean {
-        for (const info of this.workflows.values()) {
-            if (info.methodName === workflowName) {
-                return true;
-            }
-        }
+    hasWorkflow(_name: string): boolean {
+        // For now, always return false - can be enhanced when workflow discovery is added
         return false;
     }
 
     /**
-     * Logs the results of the discovery process.
-     * Provides a summary of discovered components and their details.
+     * Get schedule IDs
      */
+    getScheduleIds(): string[] {
+        // Return empty array for now - schedules are handled by ScheduleService
+        return [];
+    }
+
+    /**
+     * Get workflow info by name
+     */
+    getWorkflowInfo(_workflowName: string): unknown {
+        // Return null for now - can be enhanced when workflow discovery is added
+        return null;
+    }
+
+    /**
+     * Force re-discovery of components (useful for testing)
+     */
+    async rediscover(): Promise<void> {
+        this.logger.info('Forcing component re-discovery...');
+        this.clearDiscoveredComponents();
+        await this.discoverComponents();
+        this.lastDiscoveryTime = new Date();
+        this.logDiscoveryResults();
+    }
+
+    /**
+     * Get health status for monitoring
+     */
+    getHealthStatus() {
+        const stats = this.getStats();
+        const hasDiscoveredComponents = this.getTotalDiscovered() > 0;
+        const discoveryDuration =
+            this.discoveryStartTime && this.lastDiscoveryTime
+                ? this.lastDiscoveryTime.getTime() - this.discoveryStartTime.getTime()
+                : null;
+
+        return {
+            status: hasDiscoveredComponents ? 'healthy' : 'degraded',
+            discoveredItems: stats,
+            isComplete: this.isDiscoveryComplete,
+            lastDiscovery: this.lastDiscoveryTime,
+            discoveryDuration,
+            totalComponents: this.getTotalDiscovered(),
+        };
+    }
+
+    private async discoverComponents(): Promise<void> {
+        const providers = this.discoveryService.getProviders();
+        const controllers = this.discoveryService.getControllers();
+
+        this.logger.debug(
+            `Scanning ${providers.length} providers and ${controllers.length} controllers`,
+        );
+
+        const allWrappers = [...providers, ...controllers];
+
+        for (const wrapper of allWrappers) {
+            try {
+                await this.processWrapper(wrapper);
+            } catch (error) {
+                this.logger.warn(
+                    `Failed to process wrapper ${this.getWrapperName(wrapper)}`,
+                    error,
+                );
+            }
+        }
+    }
+
+    private async processWrapper(wrapper: unknown): Promise<void> {
+        const instance = (wrapper as { instance?: unknown }).instance;
+        const metatype = (wrapper as { metatype?: Function }).metatype;
+
+        if (!instance || !metatype) {
+            return;
+        }
+
+        const className = metatype.name;
+        this.logger.debug(`Processing class: ${className}`);
+
+        // Discover activities
+        if (this.metadataAccessor.isActivity(metatype)) {
+            await this.discoverActivitiesInClass(instance, className);
+        }
+
+        // Discover signals and queries in any class
+        await this.discoverSignalsInClass(instance, className);
+        await this.discoverQueriesInClass(instance, className);
+        await this.discoverChildWorkflowsInClass(instance, className);
+    }
+
+    private async discoverActivitiesInClass(instance: unknown, className: string): Promise<void> {
+        try {
+            const activityMethods = this.metadataAccessor.extractActivityMethods(instance);
+
+            for (const [activityName, method] of activityMethods.entries()) {
+                this.discoveredActivities.set(activityName, {
+                    name: activityName,
+                    className,
+                    method,
+                    instance,
+                });
+
+                this.logger.debug(`Discovered activity: ${className}.${activityName}`);
+            }
+        } catch (error) {
+            this.logger.warn(`Failed to discover activities in ${className}`, error);
+        }
+    }
+
+    private async discoverSignalsInClass(instance: unknown, className: string): Promise<void> {
+        try {
+            const constructor = (instance as { constructor: Function }).constructor;
+            const signals = this.metadataAccessor.getSignalMethods(constructor.prototype);
+
+            for (const [signalName, methodName] of Object.entries(signals)) {
+                this.discoveredSignals.set(signalName, {
+                    className,
+                    signalName,
+                    methodName,
+                    handler: (instance as any)[methodName]?.bind(instance),
+                    instance: instance as object,
+                });
+
+                this.logger.debug(`Discovered signal: ${className}.${methodName} -> ${signalName}`);
+            }
+        } catch (error) {
+            this.logger.warn(`Failed to discover signals in ${className}`, error);
+        }
+    }
+
+    private async discoverQueriesInClass(instance: unknown, className: string): Promise<void> {
+        try {
+            const constructor = (instance as { constructor: Function }).constructor;
+            const queries = this.metadataAccessor.getQueryMethods(constructor.prototype);
+
+            for (const [queryName, methodName] of Object.entries(queries)) {
+                this.discoveredQueries.set(queryName, {
+                    className,
+                    queryName,
+                    methodName,
+                    handler: (instance as any)[methodName]?.bind(instance),
+                    instance: instance as object,
+                    options: {},
+                });
+
+                this.logger.debug(`Discovered query: ${className}.${methodName} -> ${queryName}`);
+            }
+        } catch (error) {
+            this.logger.warn(`Failed to discover queries in ${className}`, error);
+        }
+    }
+
+    private async discoverChildWorkflowsInClass(
+        instance: unknown,
+        className: string,
+    ): Promise<void> {
+        try {
+            const constructor = (instance as { constructor: Function }).constructor;
+            const childWorkflows = this.metadataAccessor.getChildWorkflows(constructor.prototype);
+
+            for (const [propertyKey, metadata] of Object.entries(childWorkflows)) {
+                const workflowType = (metadata as { workflowType: { name: string } })
+                    .workflowType as any;
+                const workflowName = workflowType?.name;
+                this.discoveredChildWorkflows.set(workflowName, {
+                    className,
+                    propertyKey,
+                    workflowType,
+                    options: (metadata as any).options || {},
+                    instance: instance as object,
+                });
+
+                this.logger.debug(
+                    `Discovered child workflow: ${className}.${propertyKey} -> ${workflowName}`,
+                );
+            }
+        } catch (error) {
+            this.logger.warn(`Failed to discover child workflows in ${className}`, error);
+        }
+    }
+
+    private clearDiscoveredComponents(): void {
+        this.discoveredActivities.clear();
+        this.discoveredSignals.clear();
+        this.discoveredQueries.clear();
+        this.discoveredChildWorkflows.clear();
+        this.isDiscoveryComplete = false;
+        this.discoveryStartTime = null;
+        this.lastDiscoveryTime = null;
+    }
+
+    private getTotalDiscovered(): number {
+        return (
+            this.discoveredActivities.size +
+            this.discoveredSignals.size +
+            this.discoveredQueries.size +
+            this.discoveredChildWorkflows.size
+        );
+    }
+
+    private getDiscoveredControllersCount(): number {
+        // For now, return 0 - can be enhanced when controller discovery is implemented
+        return 0;
+    }
+
+    private getDiscoveredMethodsCount(): number {
+        // For now, return 0 - can be enhanced when method counting is implemented
+        return 0;
+    }
+
+    private getDiscoveredWorkflowsCount(): number {
+        // For now, return 0 - can be enhanced when workflow discovery is implemented
+        return 0;
+    }
+
+    private getWrapperName(wrapper: unknown): string {
+        try {
+            const metatype = (wrapper as { metatype?: Function }).metatype;
+            return metatype?.name || 'unknown';
+        } catch {
+            return 'unknown';
+        }
+    }
+
     private logDiscoveryResults(): void {
         const stats = this.getStats();
-        this.logger.log(
-            `Discovery completed: ${stats.signals} signals, ${stats.queries} queries, ${stats.workflows} workflows, ${stats.childWorkflows} child workflows`,
+        const totalDiscovered = this.getTotalDiscovered();
+
+        this.logger.info(
+            `Discovery completed: ${this.discoveredActivities.size} activities, ${stats.signals} signals, ${stats.queries} queries, ${stats.childWorkflows} child workflows`,
         );
-        if (stats.signals > 0) {
-            this.logger.debug(`Discovered signals: ${Array.from(this.signals.keys()).join(', ')}`);
-        }
-        if (stats.queries > 0) {
-            this.logger.debug(`Discovered queries: ${Array.from(this.queries.keys()).join(', ')}`);
-        }
-        if (stats.workflows > 0) {
-            this.logger.debug(
-                `Discovered workflows: ${Array.from(this.workflows.keys()).join(', ')}`,
+
+        if (totalDiscovered === 0) {
+            this.logger.warn(
+                'No Temporal components discovered. Ensure decorators are properly applied.',
             );
         }
-        if (stats.childWorkflows > 0) {
-            this.logger.debug(
-                `Discovered child workflows: ${Array.from(this.childWorkflows.keys()).join(', ')}`,
-            );
+
+        // Log discovered components at debug level
+        this.logDiscoveredComponents();
+    }
+
+    private logDiscoveredComponents(): void {
+        if (this.discoveredActivities.size > 0) {
+            const activities = Array.from(this.discoveredActivities.keys());
+            this.logger.debug(`Discovered activities: [${activities.join(', ')}]`);
+        }
+
+        if (this.discoveredSignals.size > 0) {
+            const signals = Array.from(this.discoveredSignals.keys());
+            this.logger.debug(`Discovered signals: [${signals.join(', ')}]`);
+        }
+
+        if (this.discoveredQueries.size > 0) {
+            const queries = Array.from(this.discoveredQueries.keys());
+            this.logger.debug(`Discovered queries: [${queries.join(', ')}]`);
+        }
+
+        if (this.discoveredChildWorkflows.size > 0) {
+            const childWorkflows = Array.from(this.discoveredChildWorkflows.keys());
+            this.logger.debug(`Discovered child workflows: [${childWorkflows.join(', ')}]`);
         }
     }
 }

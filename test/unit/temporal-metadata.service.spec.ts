@@ -1023,9 +1023,9 @@ describe('TemporalMetadataAccessor', () => {
             // Get the cached method metadata to verify line 319
             const cachedMethods = service['activityMethodCache'].get(TestActivityForLine319);
             expect(cachedMethods?.has('customActivityName')).toBe(true);
-            const methodMetadata = cachedMethods?.get('customActivityName');
-            expect(methodMetadata?.options).toBeDefined();
-            expect((methodMetadata?.options as any)?.timeout).toBe('30s');
+            const methodMetadata = cachedMethods?.get('customActivityName') as any;
+            expect((methodMetadata as any)?.options).toBeDefined();
+            expect((methodMetadata as any)?.options?.timeout).toBe('30s');
         });
         it('should use cached methods when available (line 163)', () => {
             class TestActivityForLine163 {

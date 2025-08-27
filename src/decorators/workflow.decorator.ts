@@ -1,125 +1,14 @@
 import {
-    TEMPORAL_WORKFLOW,
-    TEMPORAL_WORKFLOW_RUN,
     TEMPORAL_SIGNAL_METHOD,
     TEMPORAL_QUERY_METHOD,
     TEMPORAL_CHILD_WORKFLOW,
 } from '../constants';
 import 'reflect-metadata';
 import { Type } from '@nestjs/common';
-import { setHandler, defineSignal, defineQuery, startChild } from '@temporalio/workflow';
+import { createLogger } from '../utils/logger';
+import { validateSignalName, validateQueryName } from '../utils/validation';
 
-/**
- * Marks a class as a Temporal workflow controller.
- * This decorator registers the class for workflow discovery and enables
- * workflow execution through the Temporal engine.
- *
- * @param options Optional workflow configuration
- * @param options.name Custom workflow name (defaults to class name)
- * @param options.description Human-readable description of the workflow
- *
- * @example Basic Usage
- * ```typescript
- * @Workflow()
- * export class OrderWorkflow {
- *   @WorkflowRun()
- *   async execute(orderId: string): Promise<OrderResult> {
- *     // Workflow implementation
- *     return { orderId, status: 'completed' };
- *   }
- * }
- * ```
- *
- * @example With Custom Name and Description
- * ```typescript
- * @Workflow({
- *   name: 'order-processing-v2',
- *   description: 'Enhanced order processing with validation and notifications'
- * })
- * export class OrderWorkflow {
- *   @WorkflowRun()
- *   async execute(orderId: string): Promise<OrderResult> {
- *     // Implementation
- *   }
- * }
- * ```
- *
- * @see {@link WorkflowRun} for marking the workflow entry point
- * @see {@link SignalMethod} for handling signals
- * @see {@link QueryMethod} for handling queries
- */
-export const Workflow = (options?: { name?: string; description?: string }): ClassDecorator => {
-    return (target: unknown) => {
-        const metadata = {
-            ...options,
-            className: (target as { name: string }).name,
-        };
-        Reflect.defineMetadata(TEMPORAL_WORKFLOW, metadata, target as object);
-        return target as never;
-    };
-};
-
-/**
- * Marks the main entry point method of a workflow.
- * This decorator identifies which method serves as the workflow's main execution function.
- * A workflow class must have exactly one method decorated with @WorkflowRun.
- *
- * @example
- * ```typescript
- * @Workflow({ name: 'user-registration' })
- * export class UserRegistrationWorkflow {
- *   @WorkflowRun()
- *   async execute(userData: UserData): Promise<RegistrationResult> {
- *     // Main workflow logic
- *     return { userId: '123', status: 'registered' };
- *   }
- *
- *   @SignalMethod('cancel')
- *   async handleCancel(): Promise<void> {
- *     // Signal handling logic
- *   }
- * }
- * ```
- *
- * @throws {Error} If multiple methods in a class are decorated with @WorkflowRun
- * @see {@link Workflow} for class-level workflow configuration
- */
-export const WorkflowRun: () => MethodDecorator = () => {
-    return (target, propertyKey, descriptor: PropertyDescriptor) => {
-        if (!descriptor || typeof descriptor.value !== 'function') {
-            throw new Error(
-                `@WorkflowRun can only be applied to methods, not ${typeof descriptor?.value}`,
-            );
-        }
-
-        // Check if another WorkflowRun method already exists on this class
-        const prototype = target.constructor.prototype;
-        const existingMethods = Object.getOwnPropertyNames(prototype).filter((name) => {
-            const desc = Object.getOwnPropertyDescriptor(prototype, name);
-            return (
-                desc?.value &&
-                typeof desc.value === 'function' &&
-                name !== propertyKey.toString() &&
-                Reflect.getMetadata(TEMPORAL_WORKFLOW_RUN, desc.value)
-            );
-        });
-
-        if (existingMethods.length > 0) {
-            throw new Error(
-                `Multiple @WorkflowRun methods found in class ${target.constructor.name}. ` +
-                    `Only one method can be decorated with @WorkflowRun. ` +
-                    `Existing: ${existingMethods.join(', ')}, Current: ${propertyKey.toString()}`,
-            );
-        }
-
-        Reflect.defineMetadata(
-            TEMPORAL_WORKFLOW_RUN,
-            { methodName: propertyKey.toString() },
-            descriptor.value,
-        );
-        return descriptor;
-    };
-};
+const logger = createLogger('WorkflowDecorators');
 
 /**
  * Marks a method as a signal handler for the workflow.
@@ -133,20 +22,20 @@ export const WorkflowRun: () => MethodDecorator = () => {
  *
  * @example Basic Signal Handler
  * ```typescript
- * @Workflow()
- * export class OrderWorkflow {
- *   private orderStatus = 'pending';
+ * // In function-based workflow
+ * const signals = wf.defineSignal<[string]>('updateStatus');
+ * const cancelSignal = wf.defineSignal('cancel');
  *
- *   @SignalMethod('updateStatus')
- *   async handleStatusUpdate(newStatus: string): Promise<void> {
- *     this.orderStatus = newStatus;
- *     // Additional logic based on status change
- *   }
+ * export async function orderWorkflow(): Promise<void> {
+ *   let orderStatus = 'pending';
  *
- *   @SignalMethod() // Uses method name as signal name
- *   async cancel(): Promise<void> {
- *     this.orderStatus = 'cancelled';
- *   }
+ *   wf.setHandler(signals, (newStatus) => {
+ *     orderStatus = newStatus;
+ *   });
+ *
+ *   wf.setHandler(cancelSignal, () => {
+ *     orderStatus = 'cancelled';
+ *   });
  * }
  * ```
  *
@@ -160,67 +49,95 @@ export const WorkflowRun: () => MethodDecorator = () => {
  * ```
  *
  * @see {@link QueryMethod} for querying workflow state
- * @see {@link Workflow} for class-level workflow configuration
  */
 export const SignalMethod = (signalName?: string): MethodDecorator => {
     return (target, propertyKey, descriptor: PropertyDescriptor) => {
+        const className = target.constructor.name;
+        const methodName = propertyKey.toString();
+        const finalSignalName = signalName || methodName;
+
+        logger.debug(`@SignalMethod decorator applied to method: ${className}.${methodName}`);
+        logger.debug(
+            `Signal name: ${finalSignalName} (provided: ${signalName || 'auto-generated'})`,
+        );
+
         if (!descriptor || typeof descriptor.value !== 'function') {
-            throw new Error(
-                `@SignalMethod can only be applied to methods, not ${typeof descriptor?.value}`,
+            const error = `@SignalMethod can only be applied to methods, not ${typeof descriptor?.value}`;
+            logger.error(
+                `@SignalMethod validation failed for ${className}.${methodName}: ${error}`,
             );
+            throw new Error(error);
         }
 
-        // Validate signal name first if provided
-        if (
-            signalName !== undefined &&
-            (signalName.length === 0 || signalName.trim().length === 0)
-        ) {
-            throw new Error('Signal name cannot be empty');
-        }
-
-        const finalSignalName = signalName || propertyKey.toString();
-
-        if (
-            finalSignalName.includes(' ') ||
-            finalSignalName.includes('\n') ||
-            finalSignalName.includes('\t')
-        ) {
-            throw new Error(
-                `Invalid signal name: "${finalSignalName}". Signal names cannot contain whitespace.`,
+        // Validate signal name using centralized validation
+        if (signalName !== undefined && signalName.length === 0) {
+            const error = 'Signal name cannot be empty';
+            logger.error(
+                `@SignalMethod validation failed for ${className}.${methodName}: ${error}`,
             );
+            throw new Error(error);
         }
 
-        const signals = Reflect.getMetadata(TEMPORAL_SIGNAL_METHOD, target) || {};
+        try {
+            validateSignalName(finalSignalName);
+        } catch (error) {
+            logger.error(
+                `@SignalMethod validation failed for ${className}.${methodName}: ${(error as Error).message}`,
+            );
+            throw error;
+        }
+
+        // Get existing signals from class prototype
+        const signals =
+            Reflect.getMetadata(TEMPORAL_SIGNAL_METHOD, target.constructor.prototype) || {};
+        logger.debug(`Existing signals in ${className}: [${Object.keys(signals).join(', ')}]`);
 
         // Check for duplicate signal names
         if (signals[finalSignalName] && signals[finalSignalName] !== propertyKey) {
-            throw new Error(
-                `Duplicate signal name "${finalSignalName}" found in class ${target.constructor.name}. ` +
-                    `Signal names must be unique within a workflow class.`,
-            );
+            const error =
+                `Duplicate signal name "${finalSignalName}" found in class ${className}. ` +
+                `Signal names must be unique within a workflow class.`;
+            logger.error(`@SignalMethod validation failed: ${error}`);
+            throw new Error(error);
         }
 
-        signals[finalSignalName] = propertyKey;
-        Reflect.defineMetadata(TEMPORAL_SIGNAL_METHOD, signals, target);
+        logger.debug(
+            `Registering signal "${finalSignalName}" for method ${className}.${methodName}`,
+        );
 
-        // Store the original method for runtime registration
-        const originalMethod = descriptor.value;
+        try {
+            // Standardized metadata storage - only use Reflect.defineMetadata
+            signals[finalSignalName] = propertyKey;
+            Reflect.defineMetadata(TEMPORAL_SIGNAL_METHOD, signals, target.constructor.prototype);
+            logger.debug(`Stored signal metadata on class prototype: ${className}`);
 
-        // Replace descriptor value with a wrapper that can register the signal handler
-        descriptor.value = function (this: unknown, ...args: unknown[]) {
-            // In v8 context, register the signal handler using Temporal's setHandler
-            if (typeof setHandler === 'function' && typeof defineSignal === 'function') {
-                try {
-                    const signalDef = defineSignal(finalSignalName);
-                    setHandler(signalDef, originalMethod.bind(this));
-                } catch {
-                    // Handler might already be registered, which is fine
-                }
-            }
+            // Store individual signal metadata on the method
+            const signalMetadata = {
+                signalName: finalSignalName,
+                methodName,
+                className,
+            };
+            Reflect.defineMetadata(
+                TEMPORAL_SIGNAL_METHOD + '_METHOD',
+                signalMetadata,
+                descriptor.value,
+            );
+            logger.debug(`Stored individual signal metadata on method: ${className}.${methodName}`);
 
-            // Call the original method
-            return originalMethod.apply(this, args);
-        };
+            logger.debug(
+                `@SignalMethod decorator successfully applied to ${className}.${methodName}`,
+            );
+        } catch (error) {
+            logger.error(
+                `Failed to store @SignalMethod metadata for ${className}.${methodName}:`,
+                error,
+            );
+            throw error;
+        }
+
+        // Keep the original method without runtime modification
+        // Runtime signal registration should be handled by the worker service
+        // when setting up the workflow execution context
 
         return descriptor;
     };
@@ -238,29 +155,16 @@ export const SignalMethod = (signalName?: string): MethodDecorator => {
  *
  * @example Basic Query Handler
  * ```typescript
- * @Workflow()
- * export class OrderWorkflow {
- *   private orderStatus = 'pending';
- *   private orderItems: OrderItem[] = [];
+ * // In function-based workflow
+ * const getStatusQuery = wf.defineQuery<string>('getStatus');
+ * const getItemsQuery = wf.defineQuery<OrderItem[]>('getItems');
  *
- *   @QueryMethod('getStatus')
- *   getCurrentStatus(): string {
- *     return this.orderStatus;
- *   }
+ * export async function orderWorkflow(): Promise<void> {
+ *   let orderStatus = 'pending';
+ *   let orderItems: OrderItem[] = [];
  *
- *   @QueryMethod() // Uses method name as query name
- *   getItems(): OrderItem[] {
- *     return [...this.orderItems]; // Return copy to prevent external modification
- *   }
- *
- *   @QueryMethod('getOrderSummary')
- *   getOrderSummary(): OrderSummary {
- *     return {
- *       status: this.orderStatus,
- *       itemCount: this.orderItems.length,
- *       total: this.calculateTotal()
- *     };
- *   }
+ *   wf.setHandler(getStatusQuery, () => orderStatus);
+ *   wf.setHandler(getItemsQuery, () => [...orderItems]);
  * }
  * ```
  *
@@ -270,64 +174,87 @@ export const SignalMethod = (signalName?: string): MethodDecorator => {
  * - They can be called at any time during workflow execution
  *
  * @see {@link SignalMethod} for modifying workflow state
- * @see {@link Workflow} for class-level workflow configuration
  */
 export const QueryMethod = (queryName?: string): MethodDecorator => {
     return (target, propertyKey, descriptor: PropertyDescriptor) => {
+        const className = target.constructor.name;
+        const methodName = propertyKey.toString();
+        const finalQueryName = queryName || methodName;
+
+        logger.debug(`@QueryMethod decorator applied to method: ${className}.${methodName}`);
+        logger.debug(`Query name: ${finalQueryName} (provided: ${queryName || 'auto-generated'})`);
+
         if (!descriptor || typeof descriptor.value !== 'function') {
-            throw new Error(
-                `@QueryMethod can only be applied to methods, not ${typeof descriptor?.value}`,
+            const error = `@QueryMethod can only be applied to methods, not ${typeof descriptor?.value}`;
+            logger.error(`@QueryMethod validation failed for ${className}.${methodName}: ${error}`);
+            throw new Error(error);
+        }
+
+        // Validate query name using centralized validation
+        if (queryName !== undefined && queryName.length === 0) {
+            const error = 'Query name cannot be empty';
+            logger.error(`@QueryMethod validation failed for ${className}.${methodName}: ${error}`);
+            throw new Error(error);
+        }
+
+        try {
+            validateQueryName(finalQueryName);
+        } catch (error) {
+            logger.error(
+                `@QueryMethod validation failed for ${className}.${methodName}: ${(error as Error).message}`,
             );
+            throw error;
         }
 
-        // Validate query name first if provided
-        if (queryName !== undefined && (queryName.length === 0 || queryName.trim().length === 0)) {
-            throw new Error('Query name cannot be empty');
-        }
-
-        const finalQueryName = queryName || propertyKey.toString();
-
-        if (
-            finalQueryName.includes(' ') ||
-            finalQueryName.includes('\n') ||
-            finalQueryName.includes('\t')
-        ) {
-            throw new Error(
-                `Invalid query name: "${finalQueryName}". Query names cannot contain whitespace.`,
-            );
-        }
-
-        const queries = Reflect.getMetadata(TEMPORAL_QUERY_METHOD, target) || {};
+        // Get existing queries from class prototype
+        const queries =
+            Reflect.getMetadata(TEMPORAL_QUERY_METHOD, target.constructor.prototype) || {};
+        logger.debug(`Existing queries in ${className}: [${Object.keys(queries).join(', ')}]`);
 
         // Check for duplicate query names
         if (queries[finalQueryName] && queries[finalQueryName] !== propertyKey) {
-            throw new Error(
-                `Duplicate query name "${finalQueryName}" found in class ${target.constructor.name}. ` +
-                    `Query names must be unique within a workflow class.`,
-            );
+            const error =
+                `Duplicate query name "${finalQueryName}" found in class ${className}. ` +
+                `Query names must be unique within a workflow class.`;
+            logger.error(`@QueryMethod validation failed: ${error}`);
+            throw new Error(error);
         }
 
-        queries[finalQueryName] = propertyKey;
-        Reflect.defineMetadata(TEMPORAL_QUERY_METHOD, queries, target);
+        logger.debug(`Registering query "${finalQueryName}" for method ${className}.${methodName}`);
 
-        // Store the original method for runtime registration
-        const originalMethod = descriptor.value;
+        try {
+            // Standardized metadata storage - only use Reflect.defineMetadata
+            queries[finalQueryName] = propertyKey;
+            Reflect.defineMetadata(TEMPORAL_QUERY_METHOD, queries, target.constructor.prototype);
+            logger.debug(`Stored query metadata on class prototype: ${className}`);
 
-        // Replace descriptor value with a wrapper that can register the query handler
-        descriptor.value = function (this: unknown, ...args: unknown[]) {
-            // In v8 context, register the query handler using Temporal's setHandler
-            if (typeof setHandler === 'function' && typeof defineQuery === 'function') {
-                try {
-                    const queryDef = defineQuery(finalQueryName);
-                    setHandler(queryDef, originalMethod.bind(this));
-                } catch {
-                    // Handler might already be registered, which is fine
-                }
-            }
+            // Store individual query metadata on the method
+            const queryMetadata = {
+                queryName: finalQueryName,
+                methodName,
+                className,
+            };
+            Reflect.defineMetadata(
+                TEMPORAL_QUERY_METHOD + '_METHOD',
+                queryMetadata,
+                descriptor.value,
+            );
+            logger.debug(`Stored individual query metadata on method: ${className}.${methodName}`);
 
-            // Call the original method
-            return originalMethod.apply(this, args);
-        };
+            logger.debug(
+                `@QueryMethod decorator successfully applied to ${className}.${methodName}`,
+            );
+        } catch (error) {
+            logger.error(
+                `Failed to store @QueryMethod metadata for ${className}.${methodName}:`,
+                error,
+            );
+            throw error;
+        }
+
+        // Keep the original method without runtime modification
+        // Runtime query registration should be handled by the worker service
+        // when setting up the workflow execution context
 
         return descriptor;
     };
@@ -347,27 +274,22 @@ export const QueryMethod = (queryName?: string): MethodDecorator => {
  *
  * @example Basic Child Workflow
  * ```typescript
- * @Workflow()
- * export class OrderWorkflow {
- *   @ChildWorkflow(PaymentWorkflow)
- *   private paymentWorkflow: PaymentWorkflow;
+ * // In function-based workflow
+ * export async function orderWorkflow(order: Order): Promise<OrderResult> {
+ *   // Start child workflows using startChild from @temporalio/workflow
+ *   const reservationHandle = await wf.startChild(inventoryWorkflow, {
+ *     args: [order.items],
+ *     workflowId: `inventory-${order.id}`
+ *   });
+ *   const reservation = await reservationHandle.result();
  *
- *   @ChildWorkflow(InventoryWorkflow)
- *   private inventoryWorkflow: InventoryWorkflow;
+ *   const paymentHandle = await wf.startChild(paymentWorkflow, {
+ *     args: [{ amount: order.total, customerId: order.customerId }],
+ *     workflowId: `payment-${order.id}`
+ *   });
+ *   const payment = await paymentHandle.result();
  *
- *   @WorkflowRun()
- *   async execute(order: Order): Promise<OrderResult> {
- *     // Reserve inventory first - startChild is called automatically
- *     const reservation = await this.inventoryWorkflow.reserve(order.items);
- *
- *     // Process payment - each method call starts a new child workflow
- *     const payment = await this.paymentWorkflow.processPayment({
- *       amount: order.total,
- *       customerId: order.customerId
- *     });
- *
- *     return { orderId: order.id, paymentId: payment.id };
- *   }
+ *   return { orderId: order.id, paymentId: payment.id };
  * }
  * ```
  *
@@ -378,97 +300,98 @@ export const QueryMethod = (queryName?: string): MethodDecorator => {
  * - Configuration like task queues should be handled via module configuration, not decorator options
  * - Each method call on the proxy starts a new child workflow instance
  *
- * @see {@link Workflow} for class-level workflow configuration
  * @see {@link InjectActivity} for injecting activities instead of workflows
  */
-export const ChildWorkflow = (workflowType: Type<unknown>): PropertyDecorator => {
+export const ChildWorkflow = (
+    workflowType: Type<unknown>,
+    options?: { taskQueue?: string },
+): PropertyDecorator => {
     return (target, propertyKey) => {
+        const className = target.constructor.name;
+        const propertyName = propertyKey.toString();
+
+        logger.debug(`@ChildWorkflow decorator applied to property: ${className}.${propertyName}`);
+        logger.debug(`Child workflow type: ${workflowType?.name}`);
+        logger.debug(`Child workflow options: ${JSON.stringify(options)}`);
+
         if (!workflowType) {
-            throw new Error('Child workflow type is required');
+            const error = 'Child workflow type is required';
+            logger.error(
+                `@ChildWorkflow validation failed for ${className}.${propertyName}: ${error}`,
+            );
+            throw new Error(error);
         }
 
         // Validate that workflowType is actually a class constructor
         if (typeof workflowType !== 'function') {
-            throw new Error('Child workflow type must be a class constructor');
+            const error = 'Child workflow type must be a class constructor';
+            logger.error(
+                `@ChildWorkflow validation failed for ${className}.${propertyName}: ${error}`,
+            );
+            throw new Error(error);
         }
 
-        // Get the workflow name from metadata or use class name
-        let workflowName = workflowType.name;
-        const workflowMetadata = Reflect.getMetadata(TEMPORAL_WORKFLOW, workflowType);
-        if (workflowMetadata?.name) {
-            workflowName = workflowMetadata.name;
-        }
+        // Use class name as workflow name for function-based workflows
+        const workflowName = workflowType.name;
+        logger.debug(`Using class name as workflow name: ${workflowName}`);
 
-        // Create a proxy that uses Temporal's startChild API safely
-        const proxy = new Proxy(
-            {},
-            {
-                get(_, prop: string | symbol) {
-                    if (typeof prop === 'string' && prop !== 'constructor' && prop !== 'toString') {
-                        return async function (...args: unknown[]) {
-                            // Lazy-load startChild to avoid import issues during testing
-                            let startChildFn: typeof startChild;
-                            try {
-                                // Use the imported startChild function
-                                startChildFn = startChild;
-                            } catch (error) {
-                                throw new Error(
-                                    `Failed to access startChild: ${(error as Error)?.message}. ` +
-                                        `Make sure this workflow is running in a Temporal workflow context.`,
-                                );
-                            }
+        // Store metadata for discovery service
+        const childWorkflowMetadata = {
+            workflowType,
+            workflowName,
+            propertyKey: propertyName,
+            className,
+            options: options || {},
+        };
 
-                            // In v8 context, use Temporal's startChild API
-                            try {
-                                // Check if we're in a workflow context
-                                if (typeof startChildFn === 'function') {
-                                    // Start a child workflow with the method name as workflow name
-                                    // or use the class-level workflow name
-                                    const childWorkflowOptions = {
-                                        workflowId: `${workflowName}-${prop}-${Date.now()}-${Math.random().toString(36).substring(2, 11)}`,
-                                        args: args,
-                                        // Task queue and other options should come from the workflow context
-                                        // not from static decorator configuration
-                                    };
+        logger.debug(
+            `Storing @ChildWorkflow metadata for ${className}.${propertyName}: ${JSON.stringify(childWorkflowMetadata)}`,
+        );
 
-                                    return await startChildFn(workflowName, childWorkflowOptions);
-                                } else {
-                                    throw new Error(
-                                        `Child workflow proxy not properly initialized. ` +
-                                            `Make sure this workflow is running in a Temporal workflow context.`,
-                                    );
-                                }
-                            } catch (error) {
-                                throw new Error(
-                                    `Failed to start child workflow ${workflowName}.${prop}: ${
-                                        (error as Error)?.message || 'Unknown error'
-                                    }`,
-                                );
-                            }
-                        };
-                    }
-                    return undefined;
+        try {
+            Reflect.defineMetadata(
+                TEMPORAL_CHILD_WORKFLOW,
+                childWorkflowMetadata,
+                target,
+                propertyKey,
+            );
+            logger.debug(`Stored @ChildWorkflow metadata for ${className}.${propertyName}`);
+
+            // Store a simple placeholder that can be replaced at runtime by the worker
+            // The actual proxy creation should happen when the workflow is instantiated
+            Object.defineProperty(target, propertyKey, {
+                get() {
+                    // This will be replaced by the worker service with the actual child workflow proxy
+                    const error = `Child workflow ${workflowName} not initialized. This should be set up by the worker service.`;
+                    logger.warn(
+                        `Child workflow proxy not initialized: ${className}.${propertyName} -> ${workflowName}`,
+                    );
+                    throw new Error(error);
                 },
-
                 set() {
-                    throw new Error('Child workflow proxy is read-only');
+                    const error = 'Child workflow proxy is read-only';
+                    logger.warn(
+                        `Attempted to set child workflow proxy: ${className}.${propertyName}`,
+                    );
+                    throw new Error(error);
                 },
-            },
-        );
+                enumerable: false,
+                configurable: true, // Allow the worker to replace this
+            });
+            logger.debug(
+                `Created property descriptor for child workflow: ${className}.${propertyName}`,
+            );
 
-        Reflect.defineMetadata(
-            TEMPORAL_CHILD_WORKFLOW,
-            { workflowType, workflowName },
-            target,
-            propertyKey,
-        );
-
-        Object.defineProperty(target, propertyKey, {
-            value: proxy,
-            writable: false,
-            enumerable: false,
-            configurable: false,
-        });
+            logger.debug(
+                `@ChildWorkflow decorator successfully applied to ${className}.${propertyName}`,
+            );
+        } catch (error) {
+            logger.error(
+                `Failed to apply @ChildWorkflow decorator to ${className}.${propertyName}:`,
+                error,
+            );
+            throw error;
+        }
     };
 };
 
@@ -478,59 +401,94 @@ export const ChildWorkflow = (workflowType: Type<unknown>): PropertyDecorator =>
  */
 export function InjectWorkflowClient(): PropertyDecorator {
     return (target: Object, propertyKey: string | symbol) => {
-        function isGetWorkflowClientAvailable(
-            obj: Record<string, unknown>,
-        ): obj is Record<string, unknown> & { getWorkflowClient: () => unknown } {
-            return typeof (obj as { getWorkflowClient?: unknown }).getWorkflowClient === 'function';
-        }
+        const className = target.constructor.name;
+        const propertyName = propertyKey.toString();
 
-        // Use lazy evaluation to avoid initialization order issues
-        let cachedClient: unknown = null;
-        let hasAttemptedLoad = false;
+        logger.debug(
+            `@InjectWorkflowClient decorator applied to property: ${className}.${propertyName}`,
+        );
 
-        const getWorkflowClient = () => {
-            if (cachedClient !== null) {
-                return cachedClient;
-            }
-
-            if (hasAttemptedLoad) {
-                throw new Error(
-                    'WorkflowClient failed to initialize. Check your Temporal configuration.',
-                );
-            }
-
-            hasAttemptedLoad = true;
-
-            if (isGetWorkflowClientAvailable(globalThis as Record<string, unknown>)) {
-                try {
-                    cachedClient = (
-                        globalThis as unknown as Record<string, unknown> & {
-                            getWorkflowClient: () => unknown;
-                        }
-                    ).getWorkflowClient();
-
-                    if (!cachedClient) {
-                        throw new Error('getWorkflowClient() returned null or undefined');
-                    }
-
-                    return cachedClient;
-                } catch (error) {
-                    throw new Error(
-                        `Failed to get WorkflowClient: ${error instanceof Error ? error.message : 'Unknown error'}`,
-                    );
-                }
-            }
-
-            throw new Error(
-                'No WorkflowClient instance available. ' +
-                    'Please ensure the TemporalModule is properly configured and imported.',
-            );
+        // Store metadata for dependency injection
+        const metadata = {
+            type: 'workflow-client',
+            propertyKey: propertyName,
+            className,
         };
 
-        Object.defineProperty(target, propertyKey, {
-            get: getWorkflowClient,
-            enumerable: false,
-            configurable: false,
-        });
+        logger.debug(
+            `Storing @InjectWorkflowClient metadata for ${className}.${propertyName}: ${JSON.stringify(metadata)}`,
+        );
+
+        try {
+            Reflect.defineMetadata('INJECT_WORKFLOW_CLIENT', metadata, target, propertyKey);
+            logger.debug(`Stored @InjectWorkflowClient metadata for ${className}.${propertyName}`);
+
+            // Try to use getWorkflowClient if available
+            try {
+                const globalGetWorkflowClient = (globalThis as { getWorkflowClient?: unknown })
+                    .getWorkflowClient;
+                let importedGetWorkflowClient: unknown;
+
+                try {
+                    // Try to import getWorkflowClient from @temporalio/client
+                    importedGetWorkflowClient = require('@temporalio/client').getWorkflowClient;
+                } catch {
+                    // Import failed, continue with global check
+                }
+
+                const getWorkflowClientFunc = globalGetWorkflowClient || importedGetWorkflowClient;
+
+                if (getWorkflowClientFunc && typeof getWorkflowClientFunc === 'function') {
+                    const client = getWorkflowClientFunc();
+
+                    Object.defineProperty(target, propertyKey, {
+                        get() {
+                            return client;
+                        },
+                        enumerable: false,
+                        configurable: false,
+                    });
+                } else {
+                    // getWorkflowClient not available, create a getter that will be replaced by the DI system
+                    Object.defineProperty(target, propertyKey, {
+                        get() {
+                            const error =
+                                'No WorkflowClient instance available. Please ensure the TemporalModule is properly configured and imported.';
+                            logger.warn(
+                                `WorkflowClient not injected: ${className}.${propertyName}`,
+                            );
+                            throw new Error(error);
+                        },
+                        enumerable: false,
+                        configurable: true, // Allow DI system to replace this
+                    });
+                }
+            } catch (error) {
+                // Create a getter that will be replaced by the DI system
+                Object.defineProperty(target, propertyKey, {
+                    get() {
+                        const error =
+                            'No WorkflowClient instance available. Please ensure the TemporalModule is properly configured and imported.';
+                        logger.warn(`WorkflowClient not injected: ${className}.${propertyName}`);
+                        throw new Error(error);
+                    },
+                    enumerable: false,
+                    configurable: true, // Allow DI system to replace this
+                });
+            }
+            logger.debug(
+                `Created property descriptor for WorkflowClient injection: ${className}.${propertyName}`,
+            );
+
+            logger.debug(
+                `@InjectWorkflowClient decorator successfully applied to ${className}.${propertyName}`,
+            );
+        } catch (error) {
+            logger.error(
+                `Failed to apply @InjectWorkflowClient decorator to ${className}.${propertyName}:`,
+                error,
+            );
+            throw error;
+        }
     };
 }

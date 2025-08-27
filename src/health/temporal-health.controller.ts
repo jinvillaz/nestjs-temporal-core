@@ -1,11 +1,11 @@
 import { Controller, Get } from '@nestjs/common';
+import { Optional } from '@nestjs/common';
+import { SystemStatus, WorkerStatus, DiscoveryStats, ScheduleStats } from '../interfaces';
 import { TemporalService } from '../services/temporal.service';
 import { TemporalClientService } from '../services/temporal-client.service';
 import { TemporalScheduleService } from '../services/temporal-schedule.service';
 import { TemporalDiscoveryService } from '../services/temporal-discovery.service';
 import { TemporalWorkerManagerService } from '../services/temporal-worker.service';
-import { Optional } from '@nestjs/common';
-import { SystemStatus, WorkerStatus, DiscoveryStats, ScheduleStats } from '../interfaces';
 
 /**
  * Health check controller for Temporal components
@@ -60,6 +60,8 @@ export class TemporalHealthController {
             components: {
                 client: {
                     ...overallHealth.components.client,
+                    status: systemStatus.client.healthy ? 'healthy' : 'unhealthy',
+                    healthy: systemStatus.client.healthy,
                     details: {
                         connected: systemStatus.client.available,
                         healthy: systemStatus.client.healthy,
@@ -68,6 +70,7 @@ export class TemporalHealthController {
                 },
                 worker: {
                     ...overallHealth.components.worker,
+                    available: this.temporalService.hasWorker(),
                     details: workerStatus
                         ? {
                               ...workerStatus,
@@ -77,6 +80,7 @@ export class TemporalHealthController {
                 },
                 discovery: {
                     ...overallHealth.components.discovery,
+                    status: 'healthy',
                     scheduled: 0, // No scheduled workflows since scheduling was removed
                     details: discoveryStats,
                 },
@@ -158,8 +162,8 @@ export class TemporalHealthController {
 
         return {
             available: hasWorker,
-            status: workerHealth.status,
-            details: workerStatus,
+            status: workerHealth.status as any,
+            details: workerStatus as any,
             healthCheck: healthCheckDetails,
         };
     }
@@ -192,7 +196,10 @@ export class TemporalHealthController {
             scheduledWorkflows: [], // No scheduled workflows since scheduling was removed
             workflowNames,
             scheduleIds: [], // No schedule IDs since scheduling was removed
-            healthDetails: healthStatus,
+            healthDetails: {
+                ...healthStatus,
+                status: healthStatus.status as 'healthy' | 'degraded',
+            },
         };
     }
 
@@ -220,7 +227,7 @@ export class TemporalHealthController {
             status: stats.active > 0 ? 'active' : 'inactive',
             healthy: isHealthy,
             stats,
-            serviceStatus: scheduleStatus,
+            serviceStatus: scheduleStatus as any,
             scheduleIds,
             scheduledWorkflows,
         };
@@ -260,9 +267,9 @@ export class TemporalHealthController {
             schedules: this.scheduleService.isHealthy(), // Schedule service health
             discovery: systemStatus.discovery.workflows >= 0, // Always true if discovery service is working
             ...(this.temporalService.hasWorker() && {
-                worker: systemStatus.worker.status?.isHealthy || false,
+                worker: (systemStatus.worker.status as any)?.isHealthy || false,
             }),
-        };
+        } as any;
 
         const ready = Object.values(checks).every(Boolean);
 

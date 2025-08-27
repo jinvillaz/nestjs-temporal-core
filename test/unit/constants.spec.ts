@@ -12,8 +12,6 @@ import {
     TEMPORAL_ACTIVITY_METHOD,
     TEMPORAL_QUERY_METHOD,
     TEMPORAL_SIGNAL_METHOD,
-    TEMPORAL_WORKFLOW,
-    TEMPORAL_WORKFLOW_RUN,
     TEMPORAL_CHILD_WORKFLOW,
     WORKFLOW_CONTEXT_METADATA,
     WORKFLOW_ID_METADATA,
@@ -62,8 +60,7 @@ describe('Constants', () => {
             expect(TEMPORAL_ACTIVITY_METHOD).toBe('TEMPORAL_ACTIVITY_METHOD');
             expect(TEMPORAL_QUERY_METHOD).toBe('TEMPORAL_QUERY_METHOD');
             expect(TEMPORAL_SIGNAL_METHOD).toBe('TEMPORAL_SIGNAL_METHOD');
-            expect(TEMPORAL_WORKFLOW).toBe('TEMPORAL_WORKFLOW');
-            expect(TEMPORAL_WORKFLOW_RUN).toBe('TEMPORAL_WORKFLOW_RUN');
+            // TEMPORAL_WORKFLOW and TEMPORAL_WORKFLOW_RUN constants removed
             expect(TEMPORAL_CHILD_WORKFLOW).toBe('TEMPORAL_CHILD_WORKFLOW');
             expect(WORKFLOW_CONTEXT_METADATA).toBe('workflow:context');
             expect(WORKFLOW_ID_METADATA).toBe('workflow:id');
@@ -78,8 +75,6 @@ describe('Constants', () => {
                 TEMPORAL_ACTIVITY_METHOD,
                 TEMPORAL_QUERY_METHOD,
                 TEMPORAL_SIGNAL_METHOD,
-                TEMPORAL_WORKFLOW,
-                TEMPORAL_WORKFLOW_RUN,
                 TEMPORAL_CHILD_WORKFLOW,
                 WORKFLOW_CONTEXT_METADATA,
                 WORKFLOW_ID_METADATA,

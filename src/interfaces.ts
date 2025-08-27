@@ -128,7 +128,7 @@ export interface RetryPolicyConfig {
  * ```
  */
 export interface TemporalOptions extends LoggerConfig {
-    connection: {
+    connection?: {
         address: string;
         namespace?: string;
         tls?: ConnectionOptions['tls'];
@@ -578,41 +578,6 @@ export interface WorkerStatus {
 }
 
 /**
- * Options for configuring workflow classes via @Workflow decorator.
- *
- * @example
- * ```typescript
- * @Workflow({
- *   name: 'order-processing',
- *   description: 'Handles complete order lifecycle'
- * })
- * export class OrderWorkflow {
- *   // Workflow implementation
- * }
- * ```
- */
-export interface WorkflowOptions {
-    name?: string;
-    description?: string;
-}
-
-/**
- * Metadata for workflow classes discovered through @Workflow decorator.
- */
-export interface WorkflowMetadata {
-    name?: string;
-    description?: string;
-    className?: string;
-}
-
-/**
- * Metadata for workflow run methods marked with @WorkflowRun decorator.
- */
-export interface WorkflowRunMetadata {
-    methodName: string;
-}
-
-/**
  * Metadata for signal methods discovered through @SignalMethod decorator.
  */
 export interface SignalMethodMetadata {
@@ -692,16 +657,6 @@ export interface ActivityInfo {
 }
 
 /**
- * Information about workflow run methods discovered in workflow classes.
- */
-export interface WorkflowRunInfo {
-    className: string;
-    methodName: string;
-    handler: (...args: unknown[]) => unknown | Promise<unknown>;
-    instance: object;
-}
-
-/**
  * Extended information about signal methods with class context.
  * Used internally for signal method management.
  */
@@ -735,4 +690,197 @@ export interface ChildWorkflowInfo {
     workflowType: Type<unknown>;
     options?: Record<string, unknown>;
     instance: object;
+}
+
+// ==========================================
+// Enhanced Type Definitions for 'any' Replacement
+// ==========================================
+
+/**
+ * Generic function type for activity methods
+ */
+export type ActivityFunction = (...args: unknown[]) => unknown | Promise<unknown>;
+
+/**
+ * Activity method metadata with proper typing
+ */
+export interface ActivityMethodInfo {
+    methodName: string;
+    name: string;
+    metadata: ActivityMethodOptions;
+}
+
+/**
+ * Activity context for execution
+ */
+export interface ActivityContext {
+    activityType: string;
+    className?: string;
+    methodName?: string;
+    executionId?: string;
+    timestamp?: Date;
+}
+
+/**
+ * Schedule specification structure
+ */
+export interface ScheduleSpec {
+    intervals?: Array<{ every: string | number }>;
+    cronExpressions?: string[];
+    timezones?: string[];
+    startAt?: Date;
+    endAt?: Date;
+    jitter?: string | number;
+}
+
+/**
+ * Schedule action definition
+ */
+export interface ScheduleAction {
+    type: 'startWorkflow';
+    workflowType: string;
+    args?: unknown[];
+    taskQueue: string;
+    workflowId?: string;
+}
+
+/**
+ * Schedule creation options with required spec and action
+ */
+export interface ScheduleCreateOptions {
+    scheduleId: string;
+    spec: any;
+    action: any;
+    memo?: Record<string, any>;
+    searchAttributes?: Record<string, any>;
+    workflowType?: string;
+    args?: unknown[];
+    taskQueue?: string;
+    interval?: string | number;
+    cron?: string;
+    timezone?: string;
+    overlapPolicy?:
+        | 'skip'
+        | 'buffer_one'
+        | 'buffer_all'
+        | 'cancel_other'
+        | 'terminate_other'
+        | 'allow_all';
+    catchupWindow?: string | number;
+    pauseOnFailure?: boolean;
+    description?: string;
+    paused?: boolean;
+    limitedActions?: number;
+}
+
+/**
+ * Workflow start options with proper typing
+ */
+export interface WorkflowStartOptions {
+    workflowId?: string;
+    taskQueue?: string;
+    searchAttributes?: Record<string, string | number | boolean | Date>;
+    memo?: Record<string, unknown>;
+    workflowIdReusePolicy?: 'ALLOW_DUPLICATE' | 'ALLOW_DUPLICATE_FAILED_ONLY' | 'REJECT_DUPLICATE';
+    workflowExecutionTimeout?: string;
+    workflowRunTimeout?: string;
+    workflowTaskTimeout?: string;
+}
+
+/**
+ * Health status types
+ */
+export type HealthStatus = 'healthy' | 'unhealthy' | 'degraded';
+
+/**
+ * Service health information
+ */
+export interface ServiceHealth {
+    status: HealthStatus;
+    details?: Record<string, unknown>;
+    timestamp?: Date;
+}
+
+/**
+ * Statistics information
+ */
+export interface ServiceStats {
+    activities: {
+        classes: number;
+        methods: number;
+        total: number;
+    };
+    schedules: number;
+    discoveries: DiscoveryStats;
+    worker: WorkerStatus;
+    client: ServiceHealth;
+}
+
+/**
+ * Overlap policy for schedules
+ */
+export type OverlapPolicy =
+    | 'skip'
+    | 'buffer_one'
+    | 'buffer_all'
+    | 'cancel_other'
+    | 'terminate_other'
+    | 'allow_all';
+
+/**
+ * Temporal overlap policy (uppercase format)
+ */
+export type TemporalOverlapPolicy =
+    | 'SKIP'
+    | 'BUFFER_ONE'
+    | 'BUFFER_ALL'
+    | 'CANCEL_OTHER'
+    | 'TERMINATE_OTHER'
+    | 'ALLOW_ALL';
+
+/**
+ * Generic metadata type for reflection
+ */
+export interface MetadataInfo {
+    [key: string]: unknown;
+}
+
+/**
+ * Activity wrapper function type
+ */
+export type ActivityWrapper = (...args: unknown[]) => Promise<unknown>;
+
+/**
+ * Instance type for NestJS providers
+ */
+export interface ProviderInstance {
+    [key: string]: unknown;
+}
+
+/**
+ * Generic client type for dependency injection
+ */
+export interface GenericClient {
+    workflow: {
+        start: (type: string, options: Record<string, unknown>) => Promise<unknown>;
+        getHandle: (id: string, runId?: string) => unknown;
+    };
+}
+
+/**
+ * Schedule description from Temporal
+ */
+export interface ScheduleDescription {
+    spec: ScheduleSpec;
+    action: ScheduleAction;
+    policies: {
+        overlap: TemporalOverlapPolicy;
+        catchupWindow: number;
+        pauseOnFailure: boolean;
+    };
+    state: {
+        paused: boolean;
+        note?: string;
+        remainingActions?: number;
+    };
 }
