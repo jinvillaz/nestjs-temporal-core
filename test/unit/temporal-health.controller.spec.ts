@@ -268,6 +268,28 @@ describe('TemporalHealthController', () => {
                 process.env.npm_package_version = originalVersion;
             }
         });
+
+        it('should handle case when client is unhealthy', async () => {
+            const unhealthySystemStatus = {
+                ...mockSystemStatus,
+                client: { available: false, healthy: false },
+            };
+
+            temporalService.getOverallHealth.mockResolvedValue(mockOverallHealth);
+            temporalService.getSystemStatus.mockResolvedValue(unhealthySystemStatus);
+            temporalService.getDiscoveryStats.mockReturnValue(mockDiscoveryStats);
+            scheduleService.getScheduleStats.mockReturnValue(mockScheduleStats);
+            temporalService.getWorkerStatus.mockReturnValue(mockWorkerStatus);
+            clientService.getRawClient.mockReturnValue(null);
+
+            const result = await controller.getOverallHealth();
+
+            expect(result.components.client.status).toBe('unhealthy');
+            expect(result.components.client.healthy).toBe(false);
+            expect((result.components.client.details as any).connected).toBe(false);
+            expect((result.components.client.details as any).healthy).toBe(false);
+            expect((result.components.client.details as any).rawClientAvailable).toBe(false);
+        });
     });
 
     describe('getSystemStatus', () => {

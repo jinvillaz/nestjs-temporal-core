@@ -264,9 +264,14 @@ export class TemporalConnectionFactory implements OnModuleDestroy {
 
     private isWorkerConnectionHealthy(connection: NativeConnection): boolean {
         try {
-            // Basic health check - if we can access the connection object, it's likely healthy
-            // Note: NativeConnection may not have isClosed() method in all versions
-            return connection !== null && connection !== undefined;
+            // Basic health check - verify the connection object has expected structure
+            // This could throw if the connection object is malformed
+            return (
+                connection !== null &&
+                connection !== undefined &&
+                typeof connection === 'object' &&
+                connection.constructor !== undefined
+            );
         } catch {
             return false;
         }
