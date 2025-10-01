@@ -7,6 +7,17 @@ import {
     TEMPORAL_CHILD_WORKFLOW,
 } from '../constants';
 import { createLogger, TemporalLogger } from '../utils/logger';
+import {
+    ActivityMethodMetadataResult,
+    ActivityMetadataExtractionResult,
+    ActivityClassValidationResult,
+    MetadataValidationResult,
+    ActivityInfoResult,
+    CacheStatsResult,
+    SignalMethodExtractionResult,
+    QueryMethodExtractionResult,
+    ChildWorkflowExtractionResult,
+} from '../interfaces';
 
 /**
  * Temporal Metadata Accessor Service
@@ -80,14 +91,7 @@ export class TemporalMetadataAccessor {
     getActivityMethodMetadata(
         instance: unknown,
         methodName: string,
-    ): {
-        name: string;
-        originalName: string;
-        methodName: string;
-        className: string;
-        options?: Record<string, unknown>;
-        handler?: Function;
-    } | null {
+    ): ActivityMethodMetadataResult | null {
         try {
             if (!instance) return null;
 
@@ -152,7 +156,7 @@ export class TemporalMetadataAccessor {
         try {
             if (!target || typeof target === 'string') return null;
 
-            const metadata = this.getActivityMethodMetadata(target, methodName || '') as any;
+            const metadata = this.getActivityMethodMetadata(target, methodName || '');
             return metadata?.name || methodName || null;
         } catch {
             return null;
@@ -164,7 +168,7 @@ export class TemporalMetadataAccessor {
      */
     getActivityOptions(target: Function): Record<string, unknown> | null {
         try {
-            const metadata = this.getActivityMetadata(target) as any;
+            const metadata = this.getActivityMetadata(target) as Record<string, unknown> | null;
             return metadata || null;
         } catch {
             return null;
@@ -174,85 +178,133 @@ export class TemporalMetadataAccessor {
     /**
      * Extract activity methods from an instance
      */
-    extractActivityMethods(instance: unknown): Map<
-        string,
-        {
-            name: string;
-            originalName: string;
-            methodName: string;
-            className: string;
-            options: Record<string, unknown>; // Always include options for test compatibility
-            handler: Function;
-        }
-    >;
+    extractActivityMethods(instance: unknown): ActivityMetadataExtractionResult {
+        const errors: Array<{ method: string; error: string }> = [];
+        const methods = new Map<string, ActivityMethodMetadataResult>();
+        let extractedCount = 0;
 
-    /**
-     * Extract activity methods from an instance (legacy compatibility)
-     */
-    extractActivityMethods(instance: unknown): Map<string, Function>;
-
-    extractActivityMethods(instance: unknown): Map<string, any> {
         if (!instance) {
-            return new Map();
+            return {
+                success: true,
+                methods,
+                errors,
+                extractedCount: 0,
+            };
         }
 
         // Check cache first
-        const constructor = (instance as any).constructor;
+        const constructor = (instance as { constructor?: Function }).constructor;
         if (constructor && this.activityMethodCache.has(constructor)) {
-            return this.activityMethodCache.get(constructor) as Map<string, any>;
-        }
-
-        const methods = new Map<
-            string,
-            {
-                name: string;
-                originalName: string;
-                methodName: string;
-                className: string;
-                options: Record<string, unknown>; // Always include options for test compatibility
-                handler: Function;
+            const cachedMethods = this.activityMethodCache.get(constructor) as Map<string, unknown>;
+            // Convert cached methods to new format
+            for (const [name, method] of cachedMethods.entries()) {
+                if (typeof method === 'function') {
+                    methods.set(name, {
+                        name,
+                        originalName: name,
+                        methodName: name,
+                        className: constructor.name || 'Unknown',
+                        handler: method,
+                    });
+                    extractedCount++;
+                } else if (method && typeof method === 'object') {
+                    methods.set(name, method as ActivityMethodMetadataResult);
+                    extractedCount++;
+                }
             }
-        >();
+            return {
+                success: true,
+                methods,
+                errors,
+                extractedCount,
+            };
+        }
 
         try {
             const prototype = Object.getPrototypeOf(instance);
             if (!prototype) {
                 this.logger.warn('No prototype found for instance');
-                return methods;
+                return {
+                    success: false,
+                    methods,
+                    errors: [{ method: 'prototype', error: 'No prototype found for instance' }],
+                    extractedCount: 0,
+                };
             }
 
-            const propertyNames = Object.getOwnPropertyNames(prototype);
+            // First, try to get activity methods stored as a collection on the prototype
+            const storedActivityMethods = Reflect.getMetadata(TEMPORAL_ACTIVITY_METHOD, prototype);
+            if (storedActivityMethods && typeof storedActivityMethods === 'object') {
+                for (const [methodName, methodMetadata] of Object.entries(storedActivityMethods)) {
+                    try {
+                        if (typeof prototype[methodName] === 'function') {
+                            const metadata = methodMetadata as Record<string, unknown>;
+                            const activityName = (metadata.name as string) || methodName;
 
-            for (const propertyName of propertyNames) {
-                if (propertyName === 'constructor') continue;
-
-                try {
-                    const methodMetadata = Reflect.getMetadata(
-                        TEMPORAL_ACTIVITY_METHOD,
-                        prototype,
-                        propertyName,
-                    );
-
-                    if (methodMetadata && typeof prototype[propertyName] === 'function') {
-                        const activityName = methodMetadata.name || propertyName;
-
-                        methods.set(activityName, {
-                            name: activityName,
-                            originalName: propertyName,
-                            methodName: propertyName,
-                            className: prototype.constructor?.name || 'Unknown',
-                            options: {
+                            methods.set(activityName, {
                                 name: activityName,
+                                originalName: methodName,
+                                methodName: methodName,
+                                className: prototype.constructor?.name || 'Unknown',
+                                options: {
+                                    name: activityName,
+                                    methodName: methodName,
+                                    className: prototype.constructor?.name || 'Unknown',
+                                    ...metadata, // Spread the full metadata into options
+                                },
+                                handler: prototype[methodName].bind(instance),
+                            });
+                            extractedCount++;
+                            this.logger.debug(`Found activity method: ${activityName}`);
+                        }
+                    } catch (methodError) {
+                        const errorMessage =
+                            methodError instanceof Error ? methodError.message : 'Unknown error';
+                        errors.push({ method: methodName, error: errorMessage });
+                        this.logger.warn(`Failed to process method ${methodName}`, methodError);
+                    }
+                }
+            } else {
+                // Fallback: check individual properties for metadata (backwards compatibility)
+                const propertyNames = Object.getOwnPropertyNames(prototype);
+
+                for (const propertyName of propertyNames) {
+                    if (propertyName === 'constructor') continue;
+
+                    try {
+                        const methodMetadata = Reflect.getMetadata(
+                            TEMPORAL_ACTIVITY_METHOD,
+                            prototype,
+                            propertyName,
+                        );
+
+                        if (methodMetadata && typeof prototype[propertyName] === 'function') {
+                            const activityName =
+                                ((methodMetadata as Record<string, unknown>).name as string) ||
+                                propertyName;
+
+                            methods.set(activityName, {
+                                name: activityName,
+                                originalName: propertyName,
                                 methodName: propertyName,
                                 className: prototype.constructor?.name || 'Unknown',
-                                ...methodMetadata, // Spread the full metadata into options
-                            },
-                            handler: prototype[propertyName].bind(instance),
-                        });
-                        this.logger.debug(`Found activity method: ${activityName}`);
+                                options: {
+                                    name: activityName,
+                                    methodName: propertyName,
+                                    className: prototype.constructor?.name || 'Unknown',
+                                    ...methodMetadata, // Spread the full metadata into options
+                                },
+                                handler: prototype[propertyName].bind(instance),
+                            });
+                            extractedCount++;
+                            this.logger.debug(`Found activity method: ${activityName}`);
+                        }
+                    } catch (error) {
+                        const errorMessage =
+                            error instanceof Error ? error.message : 'Unknown error';
+                        errors.push({ method: propertyName, error: errorMessage });
+                        this.logger.warn(`Failed to process method ${propertyName}`, error);
                     }
-                } catch (error) {
-                    this.logger.warn(`Failed to process method ${propertyName}`, error);
                 }
             }
 
@@ -261,10 +313,17 @@ export class TemporalMetadataAccessor {
                 this.activityMethodCache.set(constructor, methods);
             }
         } catch (error) {
+            const errorMessage = error instanceof Error ? error.message : 'Unknown error';
             this.logger.error('Failed to extract activity methods', error);
+            errors.push({ method: 'extraction', error: errorMessage });
         }
 
-        return methods;
+        return {
+            success: errors.length === 0,
+            methods,
+            errors,
+            extractedCount,
+        };
     }
 
     /**
@@ -297,14 +356,15 @@ export class TemporalMetadataAccessor {
 
             if (prototypeMetadata && typeof prototypeMetadata === 'object') {
                 for (const [methodName, metadata] of Object.entries(prototypeMetadata)) {
+                    const metadataObj = metadata as Record<string, unknown>;
                     methods.push({
                         methodName,
-                        name: (metadata as any).name || methodName,
+                        name: (metadataObj.name as string) || methodName,
                         metadata: {
-                            name: (metadata as any).name || methodName,
+                            name: (metadataObj.name as string) || methodName,
                             methodName,
                             className: target.name || 'Unknown',
-                            options: (metadata as any).options,
+                            options: metadataObj.options as Record<string, unknown> | undefined,
                         },
                     });
                 }
@@ -319,24 +379,14 @@ export class TemporalMetadataAccessor {
     /**
      * Extract methods from prototype (alias for extractActivityMethods)
      */
-    extractMethodsFromPrototype(instance: unknown): Map<
-        string,
-        {
-            name: string;
-            originalName: string;
-            methodName: string;
-            className: string;
-            options?: Record<string, unknown>;
-            handler: Function;
-        }
-    > {
+    extractMethodsFromPrototype(instance: unknown): ActivityMetadataExtractionResult {
         return this.extractActivityMethods(instance);
     }
 
     /**
      * Get method options for an activity method on a prototype
      */
-    getActivityMethodOptions(target: any, methodName?: string): Record<string, unknown> | null {
+    getActivityMethodOptions(target: unknown, methodName?: string): Record<string, unknown> | null {
         try {
             if (!target || !methodName) return null;
 
@@ -350,63 +400,116 @@ export class TemporalMetadataAccessor {
     /**
      * Get signal methods from a prototype
      */
-    getSignalMethods(prototype: any): Record<string, string> {
+    getSignalMethods(prototype: unknown): SignalMethodExtractionResult {
         try {
-            return Reflect.getMetadata(TEMPORAL_SIGNAL_METHOD, prototype) || {};
-        } catch {
-            return {};
+            const methods = Reflect.getMetadata(TEMPORAL_SIGNAL_METHOD, prototype as object) || {};
+            return {
+                success: true,
+                methods: methods as Record<string, string>,
+                errors: [],
+            };
+        } catch (error) {
+            const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+            return {
+                success: false,
+                methods: {},
+                errors: [{ method: 'signal', error: errorMessage }],
+            };
         }
     }
 
     /**
      * Get query methods from a prototype
      */
-    getQueryMethods(prototype: any): Record<string, string> {
+    getQueryMethods(prototype: unknown): QueryMethodExtractionResult {
         try {
-            return Reflect.getMetadata(TEMPORAL_QUERY_METHOD, prototype) || {};
-        } catch {
-            return {};
+            const methods = Reflect.getMetadata(TEMPORAL_QUERY_METHOD, prototype as object) || {};
+            return {
+                success: true,
+                methods: methods as Record<string, string>,
+                errors: [],
+            };
+        } catch (error) {
+            const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+            return {
+                success: false,
+                methods: {},
+                errors: [{ method: 'query', error: errorMessage }],
+            };
         }
     }
 
     /**
      * Get child workflows from a prototype
      */
-    getChildWorkflows(prototype: any): Record<string, unknown> {
+    getChildWorkflows(prototype: unknown): ChildWorkflowExtractionResult {
         try {
-            return Reflect.getMetadata(TEMPORAL_CHILD_WORKFLOW, prototype) || {};
-        } catch {
-            return {};
+            const workflows =
+                Reflect.getMetadata(TEMPORAL_CHILD_WORKFLOW, prototype as object) || {};
+            return {
+                success: true,
+                workflows: workflows as Record<string, unknown>,
+                errors: [],
+            };
+        } catch (error) {
+            const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+            return {
+                success: false,
+                workflows: {},
+                errors: [{ workflow: 'child', error: errorMessage }],
+            };
         }
     }
 
     /**
      * Validate an activity class
      */
-    validateActivityClass(constructor: Function): { isValid: boolean; issues: string[] } {
+    validateActivityClass(constructor: Function): ActivityClassValidationResult {
         const issues: string[] = [];
+        const warnings: string[] = [];
 
         try {
+            const className = constructor.name || 'Unknown';
+            const prototype = constructor.prototype;
+            const methodCount = this.getActivityMethodNames(constructor).length;
+
             // Check if class has activity metadata
             if (!this.isActivity(constructor)) {
                 issues.push('Class is not marked with @Activity decorator');
             }
 
             // Check for activity methods
-            const prototype = constructor.prototype;
             const hasActivityMethods = this.hasActivityMethods(prototype);
 
             if (!hasActivityMethods) {
                 issues.push('Activity class has no methods marked with @ActivityMethod');
             }
 
+            // Add warnings for potential issues
+            if (methodCount === 0) {
+                warnings.push('No activity methods found in class');
+            }
+
+            if (methodCount > 50) {
+                warnings.push('Class has many activity methods, consider splitting');
+            }
+
             return {
                 isValid: issues.length === 0,
                 issues,
+                warnings: warnings.length > 0 ? warnings : undefined,
+                className,
+                methodCount,
             };
         } catch (error) {
-            issues.push(`Validation failed: ${(error as Error).message}`);
-            return { isValid: false, issues };
+            const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+            issues.push(`Validation failed: ${errorMessage}`);
+            return {
+                isValid: false,
+                issues,
+                className: constructor.name || 'Unknown',
+                methodCount: 0,
+            };
         }
     }
 
@@ -417,8 +520,14 @@ export class TemporalMetadataAccessor {
         if (!prototype) return false;
 
         try {
-            const propertyNames = Object.getOwnPropertyNames(prototype);
+            // Check for activity methods stored as a collection on the prototype
+            const activityMethods = Reflect.getMetadata(TEMPORAL_ACTIVITY_METHOD, prototype);
+            if (activityMethods && typeof activityMethods === 'object') {
+                return Object.keys(activityMethods).length > 0;
+            }
 
+            // Fallback: check individual property metadata (for backwards compatibility)
+            const propertyNames = Object.getOwnPropertyNames(prototype);
             return propertyNames.some((propertyName) => {
                 if (propertyName === 'constructor') return false;
 
@@ -436,9 +545,9 @@ export class TemporalMetadataAccessor {
     /**
      * Get all metadata keys for debugging
      */
-    getAllMetadataKeys(target: any): string[] {
+    getAllMetadataKeys(target: unknown): string[] {
         try {
-            return Reflect.getMetadataKeys(target);
+            return Reflect.getMetadataKeys(target as object);
         } catch {
             return [];
         }
@@ -449,8 +558,8 @@ export class TemporalMetadataAccessor {
      */
     getActivityName(target: Function): string | null {
         try {
-            const metadata = this.getActivityMetadata(target) as any;
-            return metadata?.name || target.name || null;
+            const metadata = this.getActivityMetadata(target) as Record<string, unknown> | null;
+            return (metadata?.name as string) || target.name || null;
         } catch {
             return null;
         }
@@ -459,15 +568,7 @@ export class TemporalMetadataAccessor {
     /**
      * Get activity info with comprehensive details
      */
-    getActivityInfo(target: Function | null | undefined | string): {
-        className: string;
-        isActivity: boolean;
-        activityName: string | null;
-        methodNames: string[];
-        metadata: unknown;
-        activityOptions: unknown;
-        methodCount: number;
-    } {
+    getActivityInfo(target: Function | null | undefined | string): ActivityInfoResult {
         try {
             if (!target || typeof target !== 'function') {
                 // Return a default structure for null/undefined/invalid targets
@@ -514,13 +615,17 @@ export class TemporalMetadataAccessor {
     /**
      * Validate that required metadata exists
      */
-    validateMetadata(target: any, expectedKeys: string[]): { isValid: boolean; missing: string[] } {
+    validateMetadata(target: unknown, expectedKeys: string[]): MetadataValidationResult {
         const missing: string[] = [];
+        const present: string[] = [];
+        const targetName = typeof target === 'function' ? target.name || 'Unknown' : 'Unknown';
 
         for (const key of expectedKeys) {
             try {
-                if (!Reflect.hasMetadata(key, target as any)) {
+                if (!Reflect.hasMetadata(key, target as object)) {
                     missing.push(key);
+                } else {
+                    present.push(key);
                 }
             } catch {
                 missing.push(key);
@@ -530,6 +635,8 @@ export class TemporalMetadataAccessor {
         return {
             isValid: missing.length === 0,
             missing,
+            present,
+            target: targetName,
         };
     }
 
@@ -543,13 +650,15 @@ export class TemporalMetadataAccessor {
     /**
      * Get cache statistics
      */
-    getCacheStats(): { size: number; entries: string[]; message?: string; note?: string } {
+    getCacheStats(): CacheStatsResult {
         const entries = Array.from(this.activityMethodCache.keys()).map((k) => k.name || 'Unknown');
         return {
             size: this.activityMethodCache.size,
             entries,
             message: 'Cache statistics not available',
             note: 'WeakMap-based caching prevents memory leaks but limits size reporting',
+            hitRate: 0, // Not tracked in current implementation
+            missRate: 0, // Not tracked in current implementation
         };
     }
 }

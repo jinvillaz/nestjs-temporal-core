@@ -1,4 +1,4 @@
-import { DynamicModule, Module, Provider, Type, ForwardReference } from '@nestjs/common';
+import { DynamicModule, Module, Provider, Type } from '@nestjs/common';
 import { DiscoveryModule } from '@nestjs/core';
 import { TemporalService } from './services/temporal.service';
 import {
@@ -11,7 +11,6 @@ import { TemporalDiscoveryService } from './services/temporal-discovery.service'
 import { TemporalClientService } from './services/temporal-client.service';
 import { TemporalScheduleService } from './services/temporal-schedule.service';
 import { TemporalWorkerManagerService } from './services/temporal-worker.service';
-import { TemporalActivityService } from './services/temporal-activity.service';
 import { TemporalMetadataAccessor } from './services/temporal-metadata.service';
 import { TemporalLoggerManager } from './utils/logger';
 import { TemporalOptions } from './interfaces';
@@ -48,7 +47,9 @@ export class TemporalModule {
     static registerAsync(options: TemporalAsyncOptions): DynamicModule {
         this.validateAsyncOptions(options);
 
-        const imports: (DynamicModule | typeof DiscoveryModule)[] = [DiscoveryModule];
+        const imports: (DynamicModule | typeof DiscoveryModule | Type<unknown>)[] = [
+            DiscoveryModule,
+        ];
         const providers: Provider[] = [];
 
         // Add imports from options
@@ -56,7 +57,7 @@ export class TemporalModule {
             for (const importModule of options.imports) {
                 if (typeof importModule === 'function') {
                     // It's a class/module
-                    imports.push(importModule as any);
+                    imports.push(importModule);
                 } else if (typeof importModule === 'object' && importModule !== null) {
                     // It's likely a DynamicModule
                     imports.push(importModule as DynamicModule);
@@ -149,7 +150,6 @@ export class TemporalModule {
             TemporalScheduleService,
             TemporalDiscoveryService,
             TemporalWorkerManagerService,
-            TemporalActivityService,
             TemporalMetadataAccessor,
             TemporalService,
         ];
@@ -217,7 +217,6 @@ export class TemporalModule {
             TemporalScheduleService,
             TemporalDiscoveryService,
             TemporalWorkerManagerService,
-            TemporalActivityService,
             TemporalMetadataAccessor,
             TemporalService,
         ];

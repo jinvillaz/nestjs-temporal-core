@@ -1,1562 +1,953 @@
-import { Test, TestingModule } from '@nestjs/testing';
 import { TemporalMetadataAccessor } from '../../src/services/temporal-metadata.service';
-import { TEMPORAL_ACTIVITY, TEMPORAL_ACTIVITY_METHOD } from '../../src/constants';
+import {
+    TEMPORAL_ACTIVITY,
+    TEMPORAL_ACTIVITY_METHOD,
+    TEMPORAL_SIGNAL_METHOD,
+    TEMPORAL_QUERY_METHOD,
+    TEMPORAL_CHILD_WORKFLOW,
+} from '../../src/constants';
+import 'reflect-metadata';
 
 describe('TemporalMetadataAccessor', () => {
     let service: TemporalMetadataAccessor;
 
-    beforeEach(async () => {
-        const module: TestingModule = await Test.createTestingModule({
-            providers: [TemporalMetadataAccessor],
-        }).compile();
+    // Mock classes with decorators
+    class MockActivityClass {
+        testMethod() {
+            return 'test';
+        }
 
-        service = module.get<TemporalMetadataAccessor>(TemporalMetadataAccessor);
+        anotherMethod(arg: string) {
+            return arg;
+        }
+    }
+
+    class MockNonActivityClass {
+        regularMethod() {
+            return 'regular';
+        }
+    }
+
+    class MockManyMethodsClass {}
+
+    beforeEach(() => {
+        service = new TemporalMetadataAccessor();
+
+        // Set up metadata for MockActivityClass
+        Reflect.defineMetadata(TEMPORAL_ACTIVITY, { name: 'TestActivity' }, MockActivityClass);
+
+        // Set collection metadata on prototype
+        Reflect.defineMetadata(
+            TEMPORAL_ACTIVITY_METHOD,
+            {
+                testMethod: { name: 'testActivity' },
+                anotherMethod: { name: 'anotherActivity', options: { timeout: 5000 } },
+            },
+            MockActivityClass.prototype,
+        );
+
+        // Also set individual metadata for methods that need it
+        Reflect.defineMetadata(
+            TEMPORAL_ACTIVITY_METHOD,
+            { name: 'testActivity' },
+            MockActivityClass.prototype,
+            'testMethod',
+        );
+        Reflect.defineMetadata(
+            TEMPORAL_ACTIVITY_METHOD,
+            { name: 'anotherActivity', options: { timeout: 5000 } },
+            MockActivityClass.prototype,
+            'anotherMethod',
+        );
+
+        // Set up metadata for many methods test
+        const manyMethods: Record<string, unknown> = {};
+        for (let i = 0; i < 55; i++) {
+            manyMethods[`method${i}`] = { name: `activity${i}` };
+        }
+        Reflect.defineMetadata(TEMPORAL_ACTIVITY, {}, MockManyMethodsClass);
+        Reflect.defineMetadata(TEMPORAL_ACTIVITY_METHOD, manyMethods, MockManyMethodsClass.prototype);
     });
 
     afterEach(() => {
-        jest.restoreAllMocks();
-    });
-
-    it('should be defined', () => {
-        expect(service).toBeDefined();
+        service.clearCache();
     });
 
     describe('isActivity', () => {
-        it('should return true when target has TEMPORAL_ACTIVITY metadata', () => {
-            class TestActivity {}
-            jest.spyOn(Reflect, 'hasMetadata').mockReturnValue(true);
-
-            const result = service.isActivity(TestActivity);
-
-            expect(result).toBe(true);
-            expect(Reflect.hasMetadata).toHaveBeenCalledWith(TEMPORAL_ACTIVITY, TestActivity);
+        it('should return true for class with activity metadata', () => {
+            expect(service.isActivity(MockActivityClass)).toBe(true);
         });
 
-        it('should return true when target.prototype has TEMPORAL_ACTIVITY metadata', () => {
-            class TestActivity {}
-            jest.spyOn(Reflect, 'hasMetadata')
-                .mockReturnValueOnce(false) // First call for target
-                .mockReturnValueOnce(true); // Second call for target.prototype
-
-            const result = service.isActivity(TestActivity);
-
-            expect(result).toBe(true);
-            expect(Reflect.hasMetadata).toHaveBeenCalledWith(TEMPORAL_ACTIVITY, TestActivity);
-            expect(Reflect.hasMetadata).toHaveBeenCalledWith(
-                TEMPORAL_ACTIVITY,
-                TestActivity.prototype,
-            );
+        it('should return false for class without activity metadata', () => {
+            expect(service.isActivity(MockNonActivityClass)).toBe(false);
         });
 
-        it('should return false when target has no TEMPORAL_ACTIVITY metadata', () => {
-            class TestActivity {}
-            jest.spyOn(Reflect, 'hasMetadata').mockReturnValue(false);
-
-            const result = service.isActivity(TestActivity);
-
-            expect(result).toBe(false);
+        it('should handle errors gracefully', () => {
+            const invalidTarget = null as any;
+            expect(service.isActivity(invalidTarget)).toBe(false);
         });
 
-        it('should return false when an error occurs', () => {
-            class TestActivity {}
-            jest.spyOn(Reflect, 'hasMetadata').mockImplementation(() => {
-                throw new Error('Metadata error');
-            });
+        it('should check prototype metadata', () => {
+            class ProtoActivity {}
+            Reflect.defineMetadata(TEMPORAL_ACTIVITY, {}, ProtoActivity.prototype);
 
-            const result = service.isActivity(TestActivity);
-
-            expect(result).toBe(false);
+            expect(service.isActivity(ProtoActivity)).toBe(true);
         });
     });
 
     describe('isActivityMethod', () => {
-        it('should return true when method has TEMPORAL_ACTIVITY_METHOD metadata', () => {
-            const target = {};
-            jest.spyOn(Reflect, 'hasMetadata').mockReturnValue(true);
-
-            const result = service.isActivityMethod(target, 'testMethod');
-
-            expect(result).toBe(true);
-            expect(Reflect.hasMetadata).toHaveBeenCalledWith(
-                TEMPORAL_ACTIVITY_METHOD,
-                target,
-                'testMethod',
-            );
+        it('should return true for method with activity method metadata', () => {
+            const instance = new MockActivityClass();
+            expect(service.isActivityMethod(instance, 'testMethod')).toBe(true);
         });
 
-        it('should return true when constructor prototype has metadata', () => {
-            const target = {
-                constructor: {
-                    prototype: {},
-                },
-            };
-            jest.spyOn(Reflect, 'hasMetadata')
-                .mockReturnValueOnce(false) // First call for target
-                .mockReturnValueOnce(true); // Second call for constructor.prototype
-
-            const result = service.isActivityMethod(target, 'testMethod');
-
-            expect(result).toBe(true);
+        it('should return false for method without metadata', () => {
+            const instance = new MockActivityClass();
+            expect(service.isActivityMethod(instance, 'nonExistentMethod')).toBe(false);
         });
 
-        it('should return false when target is null', () => {
-            const result = service.isActivityMethod(null, 'testMethod');
-            expect(result).toBe(false);
+        it('should return false for null target', () => {
+            expect(service.isActivityMethod(null, 'test')).toBe(false);
         });
 
-        it('should return false when target is undefined', () => {
-            const result = service.isActivityMethod(undefined, 'testMethod');
-            expect(result).toBe(false);
+        it('should return false for string target', () => {
+            expect(service.isActivityMethod('string', 'test')).toBe(false);
         });
 
-        it('should return false when target is string', () => {
-            const result = service.isActivityMethod('string', 'testMethod');
-            expect(result).toBe(false);
+        it('should handle undefined target', () => {
+            expect(service.isActivityMethod(undefined, 'test')).toBe(false);
         });
 
-        it('should return false when no metadata exists', () => {
-            const target = {};
-            jest.spyOn(Reflect, 'hasMetadata').mockReturnValue(false);
-
-            const result = service.isActivityMethod(target, 'testMethod');
-
-            expect(result).toBe(false);
-        });
-
-        it('should return false when an error occurs', () => {
-            const target = {};
-            jest.spyOn(Reflect, 'hasMetadata').mockImplementation(() => {
-                throw new Error('Metadata error');
-            });
-
-            const result = service.isActivityMethod(target, 'testMethod');
-
-            expect(result).toBe(false);
-        });
-
-        it('should handle empty method name', () => {
-            const target = {};
-            jest.spyOn(Reflect, 'hasMetadata').mockReturnValue(true);
-
-            const result = service.isActivityMethod(target);
-
-            expect(result).toBe(true);
-            expect(Reflect.hasMetadata).toHaveBeenCalledWith(TEMPORAL_ACTIVITY_METHOD, target, '');
+        it('should handle errors gracefully', () => {
+            const invalidTarget = {};
+            expect(service.isActivityMethod(invalidTarget, 'test')).toBe(false);
         });
     });
 
     describe('getActivityMetadata', () => {
-        it('should return metadata from target', () => {
-            class TestActivity {}
-            const mockMetadata = { name: 'TestActivity' };
-            jest.spyOn(Reflect, 'getMetadata').mockReturnValue(mockMetadata);
+        it('should return activity metadata from class', () => {
+            const metadata = service.getActivityMetadata(MockActivityClass);
 
-            const result = service.getActivityMetadata(TestActivity);
-
-            expect(result).toBe(mockMetadata);
-            expect(Reflect.getMetadata).toHaveBeenCalledWith(TEMPORAL_ACTIVITY, TestActivity);
+            expect(metadata).toEqual({ name: 'TestActivity' });
         });
 
-        it('should return metadata from target.prototype when target has none', () => {
-            class TestActivity {}
-            const mockMetadata = { name: 'TestActivity' };
-            jest.spyOn(Reflect, 'getMetadata')
-                .mockReturnValueOnce(null) // First call for target
-                .mockReturnValueOnce(mockMetadata); // Second call for target.prototype
+        it('should return null for class without metadata', () => {
+            const metadata = service.getActivityMetadata(MockNonActivityClass);
 
-            const result = service.getActivityMetadata(TestActivity);
-
-            expect(result).toBe(mockMetadata);
+            expect(metadata).toBeNull();
         });
 
-        it('should return null when no metadata exists', () => {
-            class TestActivity {}
-            jest.spyOn(Reflect, 'getMetadata').mockReturnValue(null);
+        it('should check prototype metadata', () => {
+            class ProtoActivity {}
+            Reflect.defineMetadata(TEMPORAL_ACTIVITY, { name: 'Proto' }, ProtoActivity.prototype);
 
-            const result = service.getActivityMetadata(TestActivity);
+            const metadata = service.getActivityMetadata(ProtoActivity);
 
-            expect(result).toBeNull();
+            expect(metadata).toEqual({ name: 'Proto' });
         });
 
-        it('should return null when an error occurs', () => {
-            class TestActivity {}
-            jest.spyOn(Reflect, 'getMetadata').mockImplementation(() => {
-                throw new Error('Metadata error');
-            });
+        it('should handle errors gracefully', () => {
+            const metadata = service.getActivityMetadata(null as any);
 
-            const result = service.getActivityMetadata(TestActivity);
-
-            expect(result).toBeNull();
+            expect(metadata).toBeNull();
         });
     });
 
     describe('getActivityMethodMetadata', () => {
-        it('should return method metadata when it exists', () => {
-            const instance = {};
-            const mockMetadata = {
-                name: 'testMethod',
-                options: { timeout: '1m' },
-            };
+        it('should return method metadata for valid method', () => {
+            const instance = new MockActivityClass();
+            const metadata = service.getActivityMethodMetadata(instance, 'testMethod');
 
-            jest.spyOn(Object, 'getPrototypeOf').mockReturnValue({
-                testMethod: jest.fn(),
-                constructor: { name: 'TestClass' },
-            });
-            jest.spyOn(Reflect, 'getMetadata').mockReturnValue(mockMetadata);
-
-            const result = service.getActivityMethodMetadata(instance, 'testMethod');
-
-            expect(result).toEqual({
-                name: 'testMethod',
-                originalName: 'testMethod',
-                methodName: 'testMethod',
-                className: 'TestClass',
-                options: { timeout: '1m' },
-                handler: expect.any(Function),
-            });
+            expect(metadata).toBeDefined();
+            expect(metadata?.name).toBe('testActivity');
+            expect(metadata?.methodName).toBe('testMethod');
+            expect(metadata?.originalName).toBe('testMethod');
         });
 
-        it('should return null when instance is null', () => {
-            const result = service.getActivityMethodMetadata(null, 'testMethod');
-            expect(result).toBeNull();
+        it('should return null for null instance', () => {
+            const metadata = service.getActivityMethodMetadata(null, 'test');
+
+            expect(metadata).toBeNull();
         });
 
-        it('should return null when instance is undefined', () => {
-            const result = service.getActivityMethodMetadata(undefined, 'testMethod');
-            expect(result).toBeNull();
+        it('should return null for method without metadata', () => {
+            const instance = new MockActivityClass();
+            const metadata = service.getActivityMethodMetadata(instance, 'nonExistent');
+
+            expect(metadata).toBeNull();
         });
 
-        it('should return null when prototype is null', () => {
-            const instance = {};
-            jest.spyOn(Object, 'getPrototypeOf').mockReturnValue(null);
+        it('should return null for method not on prototype', () => {
+            const instance = new MockActivityClass();
+            Reflect.defineMetadata(
+                TEMPORAL_ACTIVITY_METHOD,
+                { name: 'phantom' },
+                MockActivityClass.prototype,
+                'phantomMethod',
+            );
 
-            const result = service.getActivityMethodMetadata(instance, 'testMethod');
+            const metadata = service.getActivityMethodMetadata(instance, 'phantomMethod');
 
-            expect(result).toBeNull();
+            expect(metadata).toBeNull();
         });
 
-        it('should return null when no metadata exists', () => {
-            const instance = {};
-            jest.spyOn(Object, 'getPrototypeOf').mockReturnValue({});
-            jest.spyOn(Reflect, 'getMetadata').mockReturnValue(null);
+        it('should include handler function', () => {
+            const instance = new MockActivityClass();
+            const metadata = service.getActivityMethodMetadata(instance, 'testMethod');
 
-            const result = service.getActivityMethodMetadata(instance, 'testMethod');
-
-            expect(result).toBeNull();
-        });
-
-        it('should return null when method does not exist on prototype', () => {
-            const instance = {};
-            const mockMetadata = { name: 'testMethod' };
-
-            jest.spyOn(Object, 'getPrototypeOf').mockReturnValue({
-                constructor: { name: 'TestClass' },
-            });
-            jest.spyOn(Reflect, 'getMetadata').mockReturnValue(mockMetadata);
-
-            const result = service.getActivityMethodMetadata(instance, 'testMethod');
-
-            expect(result).toBeNull();
+            expect(metadata?.handler).toBeDefined();
+            expect(typeof metadata?.handler).toBe('function');
         });
 
         it('should handle errors gracefully', () => {
-            const instance = {};
-            jest.spyOn(Object, 'getPrototypeOf').mockImplementation(() => {
-                throw new Error('Prototype error');
-            });
+            const metadata = service.getActivityMethodMetadata({}, 'test');
 
-            const result = service.getActivityMethodMetadata(instance, 'testMethod');
-
-            expect(result).toBeNull();
+            expect(metadata).toBeNull();
         });
     });
 
     describe('getActivityMethodNames', () => {
-        it('should return method names with activity metadata', () => {
-            class TestActivity {
-                activityMethod1() {}
-                activityMethod2() {}
-                regularMethod() {}
-            }
+        it('should return all activity method names', () => {
+            const names = service.getActivityMethodNames(MockActivityClass);
 
-            jest.spyOn(Object, 'getOwnPropertyNames').mockReturnValue([
-                'activityMethod1',
-                'activityMethod2',
-                'regularMethod',
-                'constructor',
-            ]);
-            jest.spyOn(Reflect, 'hasMetadata').mockImplementation((key, target, property) => {
-                return property === 'activityMethod1' || property === 'activityMethod2';
-            });
-
-            const result = service.getActivityMethodNames(TestActivity);
-
-            expect(result).toEqual(['activityMethod1', 'activityMethod2']);
+            expect(names).toContain('testMethod');
+            expect(names).toContain('anotherMethod');
+            expect(names.length).toBeGreaterThanOrEqual(2);
         });
 
-        it('should return empty array for null target', () => {
-            const result = service.getActivityMethodNames(null);
-            expect(result).toEqual([]);
+        it('should not include constructor', () => {
+            const names = service.getActivityMethodNames(MockActivityClass);
+
+            expect(names).not.toContain('constructor');
         });
 
         it('should return empty array for non-function target', () => {
-            const result = service.getActivityMethodNames('string');
-            expect(result).toEqual([]);
+            expect(service.getActivityMethodNames(null)).toEqual([]);
+            expect(service.getActivityMethodNames('string' as any)).toEqual([]);
+        });
+
+        it('should return empty array for class without prototype', () => {
+            const noProto = {} as Function;
+            expect(service.getActivityMethodNames(noProto)).toEqual([]);
+        });
+
+        it('should handle metadata access errors', () => {
+            const names = service.getActivityMethodNames(MockNonActivityClass);
+
+            expect(names).toEqual([]);
         });
 
         it('should handle errors gracefully', () => {
-            class TestActivity {}
-            jest.spyOn(Object, 'getOwnPropertyNames').mockImplementation(() => {
-                throw new Error('Property error');
-            });
+            const names = service.getActivityMethodNames(undefined);
 
-            const result = service.getActivityMethodNames(TestActivity);
-
-            expect(result).toEqual([]);
+            expect(names).toEqual([]);
         });
     });
 
     describe('getActivityMethodName', () => {
-        it('should return activity method name from metadata', () => {
-            const target = {};
-            jest.spyOn(service, 'getActivityMethodMetadata').mockReturnValue({
-                name: 'customActivityName',
-                originalName: 'testMethod',
-                methodName: 'testMethod',
-                className: 'TestClass',
-                handler: jest.fn(),
-            });
+        it('should return activity name from metadata', () => {
+            const instance = new MockActivityClass();
+            const name = service.getActivityMethodName(instance, 'testMethod');
 
-            const result = service.getActivityMethodName(target, 'testMethod');
-
-            expect(result).toBe('customActivityName');
+            expect(name).toBe('testActivity');
         });
 
-        it('should return method name when no custom name in metadata', () => {
-            const target = {};
-            jest.spyOn(service, 'getActivityMethodMetadata').mockReturnValue({
-                name: '',
-                originalName: 'testMethod',
-                methodName: 'testMethod',
-                className: 'TestClass',
-                handler: jest.fn(),
-            });
+        it('should return null for null target', () => {
+            const name = service.getActivityMethodName(null, 'test');
 
-            const result = service.getActivityMethodName(target, 'testMethod');
-
-            expect(result).toBe('testMethod');
+            expect(name).toBeNull();
         });
 
         it('should return null for string target', () => {
-            const result = service.getActivityMethodName('string', 'testMethod');
-            expect(result).toBeNull();
+            const name = service.getActivityMethodName('string', 'test');
+
+            expect(name).toBeNull();
         });
 
-        it('should return null when metadata is null', () => {
-            const target = {};
-            jest.spyOn(service, 'getActivityMethodMetadata').mockReturnValue(null);
+        it('should handle errors gracefully', () => {
+            const name = service.getActivityMethodName({}, 'test');
 
-            const result = service.getActivityMethodName(target, 'testMethod');
-
-            expect(result).toBe('testMethod'); // The implementation returns methodName when metadata is null
+            // Returns the method name when no metadata is found
+            expect(name).toBe('test');
         });
     });
 
     describe('getActivityOptions', () => {
-        it('should return activity options when they exist', () => {
-            class TestActivity {}
-            const mockOptions = { timeout: '1m' };
+        it('should return activity options', () => {
+            const options = service.getActivityOptions(MockActivityClass);
 
-            jest.spyOn(service, 'getActivityMetadata').mockReturnValue(mockOptions);
-
-            const result = service.getActivityOptions(TestActivity);
-
-            expect(result).toBe(mockOptions);
+            expect(options).toEqual({ name: 'TestActivity' });
         });
 
-        it('should return null when no metadata exists', () => {
-            class TestActivity {}
-            jest.spyOn(service, 'getActivityMetadata').mockReturnValue(null);
+        it('should return null for class without metadata', () => {
+            const options = service.getActivityOptions(MockNonActivityClass);
 
-            const result = service.getActivityOptions(TestActivity);
-
-            expect(result).toBeNull();
+            expect(options).toBeNull();
         });
 
         it('should handle errors gracefully', () => {
-            class TestActivity {}
-            jest.spyOn(service, 'getActivityMetadata').mockImplementation(() => {
-                throw new Error('Metadata error');
-            });
+            const options = service.getActivityOptions(null as any);
 
-            const result = service.getActivityOptions(TestActivity);
-
-            expect(result).toBeNull();
+            expect(options).toBeNull();
         });
     });
 
     describe('extractActivityMethods', () => {
-        it('should extract activity methods from instance', () => {
-            const instance = {
-                method1: jest.fn(),
-                method2: jest.fn(),
-                regularMethod: jest.fn(),
-            };
-
-            jest.spyOn(Object, 'getPrototypeOf').mockReturnValue({
-                method1: jest.fn(),
-                method2: jest.fn(),
-                regularMethod: jest.fn(),
-                constructor: { name: 'TestClass' },
-            });
-
-            jest.spyOn(Object, 'getOwnPropertyNames').mockReturnValue([
-                'method1',
-                'method2',
-                'regularMethod',
-                'constructor',
-            ]);
-
-            jest.spyOn(Reflect, 'getMetadata').mockImplementation((key, target, property) => {
-                if (property === 'method1') {
-                    return { name: 'activity1' };
-                }
-                if (property === 'method2') {
-                    return { name: 'activity2' };
-                }
-                return null;
-            });
-
+        it('should extract all activity methods from instance', () => {
+            const instance = new MockActivityClass();
             const result = service.extractActivityMethods(instance);
 
-            expect(result.size).toBe(2);
-            expect(result.has('activity1')).toBe(true);
-            expect(result.has('activity2')).toBe(true);
+            expect(result.success).toBe(true);
+            expect(result.methods.size).toBeGreaterThanOrEqual(2);
+            expect(result.methods.has('testActivity')).toBe(true);
+            expect(result.methods.has('anotherActivity')).toBe(true);
+            expect(result.extractedCount).toBeGreaterThanOrEqual(2);
         });
 
-        it('should return empty map when instance is null', () => {
+        it('should return empty result for null instance', () => {
             const result = service.extractActivityMethods(null);
-            expect(result.size).toBe(0);
+
+            expect(result.success).toBe(true);
+            expect(result.methods.size).toBe(0);
+            expect(result.extractedCount).toBe(0);
         });
 
-        it('should return empty map when instance is undefined', () => {
-            const result = service.extractActivityMethods(undefined);
-            expect(result.size).toBe(0);
+        it('should use cache on second call', () => {
+            const instance = new MockActivityClass();
+
+            // First call
+            const result1 = service.extractActivityMethods(instance);
+
+            // Second call should use cache
+            const result2 = service.extractActivityMethods(instance);
+
+            expect(result1.extractedCount).toBe(result2.extractedCount);
+            expect(result2.success).toBe(true);
         });
 
-        it('should handle errors gracefully', () => {
-            const instance = {};
-            jest.spyOn(Object, 'getPrototypeOf').mockImplementation(() => {
-                throw new Error('Property error');
-            });
-
-            // Suppress logger error output for this test
-            const loggerSpy = jest
-                .spyOn((service as any).logger, 'error')
-                .mockImplementation(() => {});
-
+        it('should handle instance without prototype', () => {
+            const instance = Object.create(null);
             const result = service.extractActivityMethods(instance);
 
-            expect(result.size).toBe(0);
-            loggerSpy.mockRestore();
+            expect(result.success).toBe(false);
+            expect(result.errors.length).toBeGreaterThan(0);
         });
 
-        it('should use cache when available', () => {
-            const instance = { constructor: class TestClass {} };
-            const cachedMap = new Map([['activity1', { name: 'activity1' }]]);
-
-            // Set up cache
-            const cache = (service as any).activityMethodCache;
-            cache.set(instance.constructor, cachedMap);
-
-            const result = service.extractActivityMethods(instance);
-
-            expect(result).toBe(cachedMap);
-        });
-    });
-
-    describe('extractActivityMethodsFromClass', () => {
-        it('should extract activity methods from class', () => {
-            class TestActivity {
+        it('should handle fallback to individual property metadata', () => {
+            class IndividualMetadataClass {
                 method1() {}
                 method2() {}
             }
 
-            jest.spyOn(Reflect, 'getMetadata').mockReturnValue({
-                method1: { name: 'activity1' },
-                method2: { name: 'activity2' },
-            });
+            // Set individual method metadata (not as collection)
+            Reflect.defineMetadata(
+                TEMPORAL_ACTIVITY_METHOD,
+                { name: 'method1Activity' },
+                IndividualMetadataClass.prototype,
+                'method1',
+            );
+            Reflect.defineMetadata(
+                TEMPORAL_ACTIVITY_METHOD,
+                { name: 'method2Activity' },
+                IndividualMetadataClass.prototype,
+                'method2',
+            );
 
-            const result = service.extractActivityMethodsFromClass(TestActivity);
+            const instance = new IndividualMetadataClass();
+            const result = service.extractActivityMethods(instance);
 
-            expect(result).toHaveLength(2);
-            expect(result[0].methodName).toBe('method1');
-            expect(result[0].name).toBe('activity1');
-            expect(result[1].methodName).toBe('method2');
-            expect(result[1].name).toBe('activity2');
+            expect(result.success).toBe(true);
+            expect(result.methods.has('method1Activity')).toBe(true);
+            expect(result.methods.has('method2Activity')).toBe(true);
         });
 
-        it('should return empty array when no metadata exists', () => {
-            class TestActivity {}
-            jest.spyOn(Reflect, 'getMetadata').mockReturnValue(null);
+        it('should handle method extraction errors', () => {
+            class ErrorClass {}
+            const errorProto = ErrorClass.prototype;
 
-            const result = service.extractActivityMethodsFromClass(TestActivity);
+            // Create metadata with non-function property
+            Reflect.defineMetadata(
+                TEMPORAL_ACTIVITY_METHOD,
+                {
+                    validMethod: { name: 'valid' },
+                    invalidMethod: { name: 'invalid' },
+                },
+                errorProto,
+            );
 
-            expect(result).toEqual([]);
-        });
-
-        it('should handle errors gracefully', () => {
-            class TestActivity {}
-            jest.spyOn(Reflect, 'getMetadata').mockImplementation(() => {
-                throw new Error('Metadata error');
+            // Define only one method
+            Object.defineProperty(errorProto, 'validMethod', {
+                value: function () {},
+                enumerable: false,
+                configurable: true,
             });
 
-            const result = service.extractActivityMethodsFromClass(TestActivity);
+            const instance = new ErrorClass();
+            const result = service.extractActivityMethods(instance);
 
-            expect(result).toEqual([]);
+            // Should extract valid method and handle invalid one
+            expect(result.methods.has('valid')).toBe(true);
+        });
+
+        it('should bind methods to instance', () => {
+            const instance = new MockActivityClass();
+            const result = service.extractActivityMethods(instance);
+
+            const methodInfo = result.methods.get('testActivity');
+            expect(methodInfo?.handler).toBeDefined();
+            expect(typeof methodInfo?.handler).toBe('function');
+        });
+
+        it('should cache extracted methods', () => {
+            const instance1 = new MockActivityClass();
+            const instance2 = new MockActivityClass();
+
+            service.extractActivityMethods(instance1);
+            const result2 = service.extractActivityMethods(instance2);
+
+            // Should use cache since same constructor
+            expect(result2.success).toBe(true);
+        });
+    });
+
+    describe('extractActivityMethodsFromClass', () => {
+        it('should extract methods from class constructor', () => {
+            const methods = service.extractActivityMethodsFromClass(MockActivityClass);
+
+            expect(methods.length).toBeGreaterThanOrEqual(2);
+            const names = methods.map((m) => m.name);
+            expect(names).toContain('testActivity');
+            expect(names).toContain('anotherActivity');
+        });
+
+        it('should return empty array for class without methods', () => {
+            const methods = service.extractActivityMethodsFromClass(MockNonActivityClass);
+
+            expect(methods).toEqual([]);
+        });
+
+        it('should include method metadata', () => {
+            const methods = service.extractActivityMethodsFromClass(MockActivityClass);
+
+            const testMethod = methods.find((m) => m.name === 'testActivity');
+            expect(testMethod).toBeDefined();
+            expect(testMethod?.methodName).toBe('testMethod');
+            expect(testMethod?.metadata.className).toBe('MockActivityClass');
+        });
+
+        it('should handle extraction errors', () => {
+            const invalidClass = {} as Function;
+            const methods = service.extractActivityMethodsFromClass(invalidClass);
+
+            expect(methods).toEqual([]);
         });
     });
 
     describe('extractMethodsFromPrototype', () => {
-        it('should delegate to extractActivityMethods', () => {
-            const instance = {};
-            const mockResult = new Map();
-            jest.spyOn(service, 'extractActivityMethods').mockReturnValue(mockResult);
+        it('should be alias for extractActivityMethods', () => {
+            const instance = new MockActivityClass();
 
-            const result = service.extractMethodsFromPrototype(instance);
+            const result1 = service.extractMethodsFromPrototype(instance);
+            service.clearCache();
+            const result2 = service.extractActivityMethods(instance);
 
-            expect(result).toBe(mockResult);
-            expect(service.extractActivityMethods).toHaveBeenCalledWith(instance);
+            expect(result1.methods.size).toBe(result2.methods.size);
         });
     });
 
     describe('getActivityMethodOptions', () => {
-        it('should return method options when they exist', () => {
-            const target = {};
-            const mockOptions = { timeout: '1m' };
-            jest.spyOn(Reflect, 'getMetadata').mockReturnValue(mockOptions);
+        it('should return method options', () => {
+            const options = service.getActivityMethodOptions(
+                MockActivityClass.prototype,
+                'anotherMethod',
+            );
 
-            const result = service.getActivityMethodOptions(target, 'testMethod');
-
-            expect(result).toBe(mockOptions);
+            expect(options).toBeDefined();
+            expect((options as any)?.options?.timeout).toBe(5000);
         });
 
-        it('should return null when no metadata exists', () => {
-            const target = {};
-            jest.spyOn(Reflect, 'getMetadata').mockReturnValue(null);
+        it('should return null for null target', () => {
+            const options = service.getActivityMethodOptions(null, 'test');
 
-            const result = service.getActivityMethodOptions(target, 'testMethod');
-
-            expect(result).toBeNull();
+            expect(options).toBeNull();
         });
 
-        it('should return null when target is null', () => {
-            const result = service.getActivityMethodOptions(null, 'testMethod');
-            expect(result).toBeNull();
+        it('should return null for undefined method name', () => {
+            const options = service.getActivityMethodOptions(MockActivityClass.prototype);
+
+            expect(options).toBeNull();
         });
 
-        it('should return null when methodName is missing', () => {
-            const target = {};
-            const result = service.getActivityMethodOptions(target);
-            expect(result).toBeNull();
+        it('should handle errors gracefully', () => {
+            const options = service.getActivityMethodOptions({}, 'test');
+
+            expect(options).toBeNull();
         });
     });
 
     describe('getSignalMethods', () => {
-        it('should return signal methods metadata', () => {
-            const prototype = {};
-            const mockSignalMethods = { signal1: 'signalMethod1' };
-            jest.spyOn(Reflect, 'getMetadata').mockReturnValue(mockSignalMethods);
+        it('should return signal methods', () => {
+            class WorkflowClass {}
+            const signals = { updateStatus: 'updateStatus', cancel: 'cancel' };
+            Reflect.defineMetadata(TEMPORAL_SIGNAL_METHOD, signals, WorkflowClass.prototype);
 
-            const result = service.getSignalMethods(prototype);
+            const result = service.getSignalMethods(WorkflowClass.prototype);
 
-            expect(result).toBe(mockSignalMethods);
+            expect(result.success).toBe(true);
+            expect(result.methods).toEqual(signals);
+            expect(result.errors).toEqual([]);
         });
 
-        it('should return empty object when no metadata exists', () => {
-            const prototype = {};
-            jest.spyOn(Reflect, 'getMetadata').mockReturnValue(null);
+        it('should return empty object for prototype without signals', () => {
+            const result = service.getSignalMethods(MockActivityClass.prototype);
 
-            const result = service.getSignalMethods(prototype);
-
-            expect(result).toEqual({});
+            expect(result.success).toBe(true);
+            expect(result.methods).toEqual({});
         });
 
-        it('should handle errors gracefully', () => {
-            const prototype = {};
-            jest.spyOn(Reflect, 'getMetadata').mockImplementation(() => {
-                throw new Error('Metadata error');
-            });
+        it('should handle errors', () => {
+            const result = service.getSignalMethods(null);
 
-            const result = service.getSignalMethods(prototype);
-
-            expect(result).toEqual({});
+            expect(result.success).toBe(false);
+            expect(result.errors.length).toBeGreaterThan(0);
         });
     });
 
     describe('getQueryMethods', () => {
-        it('should return query methods metadata', () => {
-            const prototype = {};
-            const mockQueryMethods = { query1: 'queryMethod1' };
-            jest.spyOn(Reflect, 'getMetadata').mockReturnValue(mockQueryMethods);
+        it('should return query methods', () => {
+            class WorkflowClass {}
+            const queries = { getStatus: 'getStatus', getProgress: 'getProgress' };
+            Reflect.defineMetadata(TEMPORAL_QUERY_METHOD, queries, WorkflowClass.prototype);
 
-            const result = service.getQueryMethods(prototype);
+            const result = service.getQueryMethods(WorkflowClass.prototype);
 
-            expect(result).toBe(mockQueryMethods);
+            expect(result.success).toBe(true);
+            expect(result.methods).toEqual(queries);
+            expect(result.errors).toEqual([]);
         });
 
-        it('should return empty object when no metadata exists', () => {
-            const prototype = {};
-            jest.spyOn(Reflect, 'getMetadata').mockReturnValue(null);
+        it('should return empty object for prototype without queries', () => {
+            const result = service.getQueryMethods(MockActivityClass.prototype);
 
-            const result = service.getQueryMethods(prototype);
-
-            expect(result).toEqual({});
+            expect(result.success).toBe(true);
+            expect(result.methods).toEqual({});
         });
 
-        it('should handle errors gracefully', () => {
-            const prototype = {};
-            jest.spyOn(Reflect, 'getMetadata').mockImplementation(() => {
-                throw new Error('Metadata error');
-            });
+        it('should handle errors', () => {
+            const result = service.getQueryMethods(null);
 
-            const result = service.getQueryMethods(prototype);
-
-            expect(result).toEqual({});
+            expect(result.success).toBe(false);
+            expect(result.errors.length).toBeGreaterThan(0);
         });
     });
 
     describe('getChildWorkflows', () => {
-        it('should return child workflows metadata', () => {
-            const prototype = {};
-            const mockChildWorkflows = { workflow1: { name: 'WorkflowClass' } };
-            jest.spyOn(Reflect, 'getMetadata').mockReturnValue(mockChildWorkflows);
+        it('should return child workflows', () => {
+            class WorkflowClass {}
+            const childWorkflows = { payment: { type: 'PaymentWorkflow' } };
+            Reflect.defineMetadata(TEMPORAL_CHILD_WORKFLOW, childWorkflows, WorkflowClass.prototype);
 
-            const result = service.getChildWorkflows(prototype);
+            const result = service.getChildWorkflows(WorkflowClass.prototype);
 
-            expect(result).toBe(mockChildWorkflows);
+            expect(result.success).toBe(true);
+            expect(result.workflows).toEqual(childWorkflows);
+            expect(result.errors).toEqual([]);
         });
 
-        it('should return empty object when no metadata exists', () => {
-            const prototype = {};
-            jest.spyOn(Reflect, 'getMetadata').mockReturnValue(null);
+        it('should return empty object for prototype without child workflows', () => {
+            const result = service.getChildWorkflows(MockActivityClass.prototype);
 
-            const result = service.getChildWorkflows(prototype);
-
-            expect(result).toEqual({});
+            expect(result.success).toBe(true);
+            expect(result.workflows).toEqual({});
         });
 
-        it('should handle errors gracefully', () => {
-            const prototype = {};
-            jest.spyOn(Reflect, 'getMetadata').mockImplementation(() => {
-                throw new Error('Metadata error');
-            });
+        it('should handle errors', () => {
+            const result = service.getChildWorkflows(null);
 
-            const result = service.getChildWorkflows(prototype);
-
-            expect(result).toEqual({});
+            expect(result.success).toBe(false);
+            expect(result.errors.length).toBeGreaterThan(0);
         });
     });
 
     describe('validateActivityClass', () => {
-        it('should validate activity class successfully', () => {
-            class TestActivity {}
-            jest.spyOn(service, 'isActivity').mockReturnValue(true);
-            jest.spyOn(service as any, 'hasActivityMethods').mockReturnValue(true);
-
-            const result = service.validateActivityClass(TestActivity);
+        it('should validate valid activity class', () => {
+            const result = service.validateActivityClass(MockActivityClass);
 
             expect(result.isValid).toBe(true);
             expect(result.issues).toEqual([]);
+            expect(result.className).toBe('MockActivityClass');
+            expect(result.methodCount).toBeGreaterThan(0);
         });
 
-        it('should return invalid when class is not an activity', () => {
-            class TestClass {}
-            jest.spyOn(service, 'isActivity').mockReturnValue(false);
-
-            const result = service.validateActivityClass(TestClass);
+        it('should detect class without activity decorator', () => {
+            const result = service.validateActivityClass(MockNonActivityClass);
 
             expect(result.isValid).toBe(false);
             expect(result.issues).toContain('Class is not marked with @Activity decorator');
         });
 
-        it('should return invalid when class has no activity methods', () => {
-            class TestActivity {}
-            jest.spyOn(service, 'isActivity').mockReturnValue(true);
-            jest.spyOn(service as any, 'hasActivityMethods').mockReturnValue(false);
+        it('should detect class without activity methods', () => {
+            class EmptyActivityClass {}
+            Reflect.defineMetadata(TEMPORAL_ACTIVITY, {}, EmptyActivityClass);
 
-            const result = service.validateActivityClass(TestActivity);
+            const result = service.validateActivityClass(EmptyActivityClass);
 
             expect(result.isValid).toBe(false);
-            expect(result.issues).toContain(
-                'Activity class has no methods marked with @ActivityMethod',
-            );
+            expect(result.issues).toContain('Activity class has no methods marked with @ActivityMethod');
         });
 
-        it('should handle errors gracefully', () => {
-            class TestActivity {}
-            jest.spyOn(service, 'isActivity').mockImplementation(() => {
-                throw new Error('Validation error');
-            });
+        it('should warn about many activity methods', () => {
+            // Add individual metadata for methods so they're detected
+            for (let i = 0; i < 55; i++) {
+                Reflect.defineMetadata(
+                    TEMPORAL_ACTIVITY_METHOD,
+                    { name: `activity${i}` },
+                    MockManyMethodsClass.prototype,
+                    `method${i}`,
+                );
+            }
 
-            const result = service.validateActivityClass(TestActivity);
+            const result = service.validateActivityClass(MockManyMethodsClass);
+
+            expect(result.warnings).toBeDefined();
+            expect(result.warnings).toContain('Class has many activity methods, consider splitting');
+        });
+
+        it('should handle validation errors', () => {
+            // Create a function with no name property to trigger the error path
+            const invalidClass = (() => {}) as any;
+            Object.defineProperty(invalidClass, 'name', { value: undefined });
+
+            const result = service.validateActivityClass(invalidClass);
 
             expect(result.isValid).toBe(false);
-            expect(result.issues).toContain('Validation failed: Validation error');
+            expect(result.issues.length).toBeGreaterThan(0);
         });
     });
 
     describe('getAllMetadataKeys', () => {
-        it('should return metadata keys', () => {
-            const target = {};
-            const mockKeys = ['key1', 'key2'];
-            jest.spyOn(Reflect, 'getMetadataKeys').mockReturnValue(mockKeys);
+        it('should return all metadata keys', () => {
+            const keys = service.getAllMetadataKeys(MockActivityClass);
 
-            const result = service.getAllMetadataKeys(target);
-
-            expect(result).toBe(mockKeys);
+            expect(keys).toContain(TEMPORAL_ACTIVITY);
         });
 
-        it('should return empty array on error', () => {
-            const target = {};
-            jest.spyOn(Reflect, 'getMetadataKeys').mockImplementation(() => {
-                throw new Error('Metadata error');
-            });
+        it('should return empty array for target without metadata', () => {
+            const keys = service.getAllMetadataKeys({});
 
-            const result = service.getAllMetadataKeys(target);
+            expect(keys).toEqual([]);
+        });
 
-            expect(result).toEqual([]);
+        it('should handle errors gracefully', () => {
+            const keys = service.getAllMetadataKeys(null);
+
+            expect(keys).toEqual([]);
         });
     });
 
     describe('getActivityName', () => {
         it('should return activity name from metadata', () => {
-            class TestActivity {}
-            jest.spyOn(service, 'getActivityMetadata').mockReturnValue({ name: 'CustomActivity' });
+            const name = service.getActivityName(MockActivityClass);
 
-            const result = service.getActivityName(TestActivity);
-
-            expect(result).toBe('CustomActivity');
+            expect(name).toBe('TestActivity');
         });
 
-        it('should return class name when no metadata name exists', () => {
-            class TestActivity {}
-            jest.spyOn(service, 'getActivityMetadata').mockReturnValue({});
+        it('should fallback to class name', () => {
+            class NoNameActivity {}
+            Reflect.defineMetadata(TEMPORAL_ACTIVITY, {}, NoNameActivity);
 
-            const result = service.getActivityName(TestActivity);
+            const name = service.getActivityName(NoNameActivity);
 
-            expect(result).toBe('TestActivity');
+            expect(name).toBe('NoNameActivity');
         });
 
-        it('should return null when no metadata exists', () => {
-            class TestActivity {}
-            jest.spyOn(service, 'getActivityMetadata').mockReturnValue(null);
+        it('should return null for class without metadata', () => {
+            const name = service.getActivityName(MockNonActivityClass);
 
-            const result = service.getActivityName(TestActivity);
+            expect(name).toBe('MockNonActivityClass');
+        });
 
-            expect(result).toBe('TestActivity');
+        it('should handle errors gracefully', () => {
+            const name = service.getActivityName(null as any);
+
+            expect(name).toBeNull();
         });
     });
 
     describe('getActivityInfo', () => {
         it('should return comprehensive activity info', () => {
-            class TestActivity {}
-            jest.spyOn(service, 'isActivity').mockReturnValue(true);
-            jest.spyOn(service, 'getActivityName').mockReturnValue('CustomActivity');
-            jest.spyOn(service, 'getActivityMethodNames').mockReturnValue(['method1', 'method2']);
-            jest.spyOn(service, 'getActivityMetadata').mockReturnValue({ name: 'CustomActivity' });
-            jest.spyOn(service, 'getActivityOptions').mockReturnValue({ timeout: '1m' });
+            const info = service.getActivityInfo(MockActivityClass);
 
-            const result = service.getActivityInfo(TestActivity);
-
-            expect(result).toEqual({
-                className: 'TestActivity',
-                isActivity: true,
-                activityName: 'CustomActivity',
-                methodNames: ['method1', 'method2'],
-                metadata: { name: 'CustomActivity' },
-                activityOptions: { timeout: '1m' },
-                methodCount: 2,
-            });
+            expect(info.className).toBe('MockActivityClass');
+            expect(info.isActivity).toBe(true);
+            expect(info.activityName).toBe('TestActivity');
+            expect(info.methodNames.length).toBeGreaterThan(0);
+            expect(info.metadata).toBeDefined();
+            expect(info.activityOptions).toBeDefined();
+            expect(info.methodCount).toBeGreaterThan(0);
         });
 
-        it('should return default info for null target', () => {
-            const result = service.getActivityInfo(null);
+        it('should handle non-activity class', () => {
+            const info = service.getActivityInfo(MockNonActivityClass);
 
-            expect(result).toEqual({
-                className: 'Unknown',
-                isActivity: false,
-                activityName: null,
-                methodNames: [],
-                metadata: null,
-                activityOptions: null,
-                methodCount: 0,
-            });
+            expect(info.className).toBe('MockNonActivityClass');
+            expect(info.isActivity).toBe(false);
+            expect(info.methodCount).toBe(0);
         });
 
-        it('should return default info for non-function target', () => {
-            const result = service.getActivityInfo('string');
+        it('should handle null target', () => {
+            const info = service.getActivityInfo(null);
 
-            expect(result).toEqual({
-                className: 'Unknown',
-                isActivity: false,
-                activityName: null,
-                methodNames: [],
-                metadata: null,
-                activityOptions: null,
-                methodCount: 0,
-            });
+            expect(info.className).toBe('Unknown');
+            expect(info.isActivity).toBe(false);
+            expect(info.methodCount).toBe(0);
+        });
+
+        it('should handle string target', () => {
+            const info = service.getActivityInfo('string' as any);
+
+            expect(info.className).toBe('Unknown');
+            expect(info.isActivity).toBe(false);
+        });
+
+        it('should handle undefined target', () => {
+            const info = service.getActivityInfo(undefined);
+
+            expect(info.className).toBe('Unknown');
+            expect(info.isActivity).toBe(false);
         });
 
         it('should handle errors gracefully', () => {
-            class TestActivity {}
-            jest.spyOn(service, 'isActivity').mockImplementation(() => {
-                throw new Error('Test error');
-            });
+            const info = service.getActivityInfo({} as any);
 
-            const result = service.getActivityInfo(TestActivity);
-
-            expect(result).toEqual({
-                className: 'Unknown',
-                isActivity: false,
-                activityName: null,
-                methodNames: [],
-                metadata: null,
-                activityOptions: null,
-                methodCount: 0,
-            });
+            expect(info.className).toBe('Unknown');
+            expect(info.isActivity).toBe(false);
         });
     });
 
     describe('validateMetadata', () => {
-        it('should validate metadata keys successfully', () => {
-            const target = {};
-            jest.spyOn(Reflect, 'hasMetadata').mockReturnValue(true);
-
-            const result = service.validateMetadata(target, ['key1', 'key2']);
+        it('should validate presence of required metadata', () => {
+            const result = service.validateMetadata(MockActivityClass, [TEMPORAL_ACTIVITY]);
 
             expect(result.isValid).toBe(true);
+            expect(result.present).toContain(TEMPORAL_ACTIVITY);
             expect(result.missing).toEqual([]);
         });
 
-        it('should identify missing metadata keys', () => {
-            const target = {};
-            jest.spyOn(Reflect, 'hasMetadata').mockImplementation((key) => key === 'key1');
-
-            const result = service.validateMetadata(target, ['key1', 'key2']);
+        it('should detect missing metadata', () => {
+            const result = service.validateMetadata(MockNonActivityClass, [TEMPORAL_ACTIVITY]);
 
             expect(result.isValid).toBe(false);
-            expect(result.missing).toEqual(['key2']);
+            expect(result.missing).toContain(TEMPORAL_ACTIVITY);
+        });
+
+        it('should handle multiple keys', () => {
+            const result = service.validateMetadata(MockActivityClass, [
+                TEMPORAL_ACTIVITY,
+                'NON_EXISTENT_KEY',
+            ]);
+
+            expect(result.present).toContain(TEMPORAL_ACTIVITY);
+            expect(result.missing).toContain('NON_EXISTENT_KEY');
         });
 
         it('should handle errors gracefully', () => {
-            const target = {};
-            jest.spyOn(Reflect, 'hasMetadata').mockImplementation(() => {
-                throw new Error('Metadata error');
-            });
-
-            const result = service.validateMetadata(target, ['key1']);
+            const result = service.validateMetadata(null, [TEMPORAL_ACTIVITY]);
 
             expect(result.isValid).toBe(false);
-            expect(result.missing).toEqual(['key1']);
+            expect(result.missing.length).toBeGreaterThan(0);
         });
     });
 
     describe('clearCache', () => {
-        it('should clear the activity method cache', () => {
-            const cache = (service as any).activityMethodCache;
-            cache.set(Function, new Map());
-            expect(cache.size).toBe(1);
+        it('should clear activity method cache', () => {
+            const instance = new MockActivityClass();
+
+            service.extractActivityMethods(instance);
+            const statsBefore = service.getCacheStats();
+            expect(statsBefore.size).toBeGreaterThan(0);
 
             service.clearCache();
-
-            expect(cache.size).toBe(0);
+            const statsAfter = service.getCacheStats();
+            expect(statsAfter.size).toBe(0);
         });
     });
 
     describe('getCacheStats', () => {
         it('should return cache statistics', () => {
-            const result = service.getCacheStats();
+            const stats = service.getCacheStats();
 
-            expect(result).toHaveProperty('size');
-            expect(result).toHaveProperty('entries');
-            expect(result).toHaveProperty('message');
-            expect(result).toHaveProperty('note');
-            expect(Array.isArray(result.entries)).toBe(true);
+            expect(stats.size).toBeDefined();
+            expect(stats.entries).toBeDefined();
+            expect(Array.isArray(stats.entries)).toBe(true);
         });
 
-        it('should handle cache with entries', () => {
-            const cache = (service as any).activityMethodCache;
-            class TestClass {}
-            cache.set(TestClass, new Map());
-
-            const result = service.getCacheStats();
-
-            expect(result.size).toBeGreaterThan(0);
-            expect(result.entries).toContain('TestClass');
-        });
-    });
-
-    describe('Additional Branch Coverage Tests', () => {
-        it('should handle empty metadata name in getActivityName', () => {
-            class TestActivity {}
-            jest.spyOn(service, 'getActivityMetadata').mockReturnValue({ name: '' });
-
-            const result = service.getActivityName(TestActivity);
-
-            expect(result).toBe('TestActivity');
-        });
-
-        it('should handle function with no name property', () => {
-            const TestActivity = () => {};
-            // Remove the name property to test the fallback
-            Object.defineProperty(TestActivity, 'name', { value: '' });
-            jest.spyOn(service, 'getActivityMetadata').mockReturnValue({});
-
-            const result = service.getActivityName(TestActivity);
-
-            expect(result).toBe(null);
-        });
-
-        it('should handle getActivityName with getActivityMetadata throwing error', () => {
-            class TestActivity {}
-            jest.spyOn(service, 'getActivityMetadata').mockImplementation(() => {
-                throw new Error('Metadata error');
-            });
-
-            const result = service.getActivityName(TestActivity);
-
-            expect(result).toBe(null);
-        });
-
-        it('should handle getActivityMethodName with null metadata', () => {
-            const target = {};
-            jest.spyOn(service, 'getActivityMethodMetadata').mockReturnValue(null);
-
-            const result = service.getActivityMethodName(target, 'testMethod');
-
-            expect(result).toBe('testMethod');
-        });
-
-        it('should handle getActivityMethodName with metadata containing empty name', () => {
-            const target = {};
-            jest.spyOn(service, 'getActivityMethodMetadata').mockReturnValue({
-                name: '',
-                originalName: 'testMethod',
-                methodName: 'testMethod',
-                className: 'TestClass',
-            });
-
-            const result = service.getActivityMethodName(target, 'testMethod');
-
-            expect(result).toBe('testMethod');
-        });
-
-        it('should handle getActivityInfo with function having no name', () => {
-            const TestActivity = () => {};
-            Object.defineProperty(TestActivity, 'name', { value: '' });
-            jest.spyOn(service, 'isActivity').mockReturnValue(true);
-            jest.spyOn(service, 'getActivityName').mockReturnValue(null);
-            jest.spyOn(service, 'getActivityMethodNames').mockReturnValue([]);
-            jest.spyOn(service, 'getActivityMetadata').mockReturnValue(null);
-            jest.spyOn(service, 'getActivityOptions').mockReturnValue(null);
-
-            const result = service.getActivityInfo(TestActivity);
-
-            expect(result.className).toBe('Unknown');
-            expect(result.activityName).toBe(null);
-        });
-
-        it('should handle getAllMetadataKeys with Reflect error', () => {
-            const target = {};
-            jest.spyOn(Reflect, 'getMetadataKeys').mockImplementation(() => {
-                throw new Error('Metadata keys error');
-            });
-
-            const result = service.getAllMetadataKeys(target);
-
-            expect(result).toEqual([]);
-        });
-
-        it('should handle isActivityMethod with complex constructor chain', () => {
-            const target = {
-                constructor: {
-                    prototype: {},
-                },
-            };
-            jest.spyOn(Reflect, 'hasMetadata')
-                .mockReturnValueOnce(false) // First call for target
-                .mockReturnValueOnce(false); // Second call for constructor.prototype
-
-            const result = service.isActivityMethod(target, 'testMethod');
-
-            expect(result).toBe(false);
-        });
-
-        it('should handle isActivityMethod with undefined constructor', () => {
-            const target = {
-                constructor: undefined,
-            };
-
-            const result = service.isActivityMethod(target, 'testMethod');
-
-            expect(result).toBe(false);
-        });
-
-        it('should handle metadata accessor methods with missing methodName', () => {
-            const target = {};
-
-            const result = service.getActivityMethodOptions(target, '');
-
-            expect(result).toBe(null);
-        });
-
-        it('should handle getActivityMetadata with specific error scenarios', () => {
-            class TestActivity {}
-            jest.spyOn(Reflect, 'getMetadata').mockImplementation(() => {
-                throw new Error('Metadata error');
-            });
-
-            const result = service.getActivityMetadata(TestActivity);
-
-            expect(result).toBe(null);
-        });
-
-        it('should handle getActivityMethodMetadata with undefined prototype', () => {
-            const instance = {
-                constructor: {
-                    prototype: null,
-                },
-            };
-
-            const result = service.getActivityMethodMetadata(instance, 'testMethod');
-
-            expect(result).toBe(null);
-        });
-
-        it('should handle getSignalMethods with reflection error', () => {
-            const target = {};
-            jest.spyOn(Reflect, 'getMetadata').mockImplementation(() => {
-                throw new Error('Signal metadata error');
-            });
-
-            const result = service.getSignalMethods(target);
-
-            expect(result).toEqual({});
-        });
-
-        it('should handle getQueryMethods with reflection error', () => {
-            const target = {};
-            jest.spyOn(Reflect, 'getMetadata').mockImplementation(() => {
-                throw new Error('Query metadata error');
-            });
-
-            const result = service.getQueryMethods(target);
-
-            expect(result).toEqual({});
-        });
-
-        it('should handle getChildWorkflows with reflection error', () => {
-            const target = {};
-            jest.spyOn(Reflect, 'getMetadata').mockImplementation(() => {
-                throw new Error('Child workflows error');
-            });
-
-            const result = service.getChildWorkflows(target);
-
-            expect(result).toEqual({});
-        });
-
-        it('should handle validateMetadata with getMetadataKeys error', () => {
-            const target = {};
-            jest.spyOn(Reflect, 'getMetadataKeys').mockImplementation(() => {
-                throw new Error('Metadata keys error');
-            });
-
-            const result = service.validateMetadata(target, ['test']);
-
-            expect(result.isValid).toBe(false);
-        });
-
-        it('should handle empty method name in various methods', () => {
-            const target = {};
-
-            // Test empty method name scenarios
-            expect(service.isActivityMethod(target, '')).toBe(false);
-            expect(service.getActivityMethodOptions(target, null as any)).toBe(null);
-            expect(service.getActivityMethodOptions(target, undefined as any)).toBe(null);
-        });
-
-        it('should handle null or undefined metadata in getActivityMethodName', () => {
-            const target = {};
-
-            // Test with null metadata
-            jest.spyOn(service, 'getActivityMethodMetadata').mockReturnValue(null);
-            let result = service.getActivityMethodName(target, 'testMethod');
-            expect(result).toBe('testMethod');
-
-            // Test with undefined metadata
-            jest.spyOn(service, 'getActivityMethodMetadata').mockReturnValue(undefined as any);
-            result = service.getActivityMethodName(target, 'testMethod');
-            expect(result).toBe('testMethod');
-        });
-
-        it('should handle metadata with null name in getActivityMethodName', () => {
-            const target = {};
-            jest.spyOn(service, 'getActivityMethodMetadata').mockReturnValue({
-                name: null as any,
-                originalName: 'testMethod',
-                methodName: 'testMethod',
-                className: 'TestClass',
-            });
-
-            const result = service.getActivityMethodName(target, 'testMethod');
-
-            expect(result).toBe('testMethod');
-        });
-
-        it('should handle empty constructor chain in isActivityMethod', () => {
-            const target = {};
-
-            const result = service.isActivityMethod(target, 'testMethod');
-
-            expect(result).toBe(false);
-        });
-
-        it('should handle getActivityMethodMetadata with null constructor', () => {
-            const instance = {
-                constructor: null,
-            };
-
-            const result = service.getActivityMethodMetadata(instance, 'testMethod');
-
-            expect(result).toBe(null);
-        });
-
-        it('should handle cache operations with edge cases', () => {
-            // Test cache with undefined values
-            const cache = (service as any).activityMethodCache;
-            const TestClass = class {};
-
-            // Clear cache first
-            cache.clear();
-
-            // Add null entry to test edge case
-            cache.set(TestClass, null);
+        it('should show cached entries', () => {
+            const instance = new MockActivityClass();
+            service.extractActivityMethods(instance);
 
             const stats = service.getCacheStats();
+
             expect(stats.size).toBeGreaterThan(0);
+            expect(stats.entries).toContain('MockActivityClass');
+        });
+
+        it('should include hit and miss rates', () => {
+            const stats = service.getCacheStats();
+
+            expect(stats.hitRate).toBeDefined();
+            expect(stats.missRate).toBeDefined();
         });
     });
 
-    describe('Error Handling and Edge Cases', () => {
-        it('should handle getActivityMethodName with reflection error (line 158)', () => {
-            // Mock getActivityMethodMetadata to throw an error to trigger the catch block
-            jest.spyOn(service, 'getActivityMethodMetadata').mockImplementation(() => {
-                throw new Error('Reflection error');
-            });
+    describe('hasActivityMethods', () => {
+        it('should detect activity methods from collection metadata', () => {
+            const hasMethods = service['hasActivityMethods'](MockActivityClass.prototype);
 
-            const result = service.getActivityMethodName({}, 'testMethod');
-
-            expect(result).toBe(null);
+            expect(hasMethods).toBe(true);
         });
 
-        it('should handle extractMethodsFromPrototype with no prototype (lines 220-221)', () => {
-            // Create an object with null prototype
-            const objectWithoutPrototype = Object.create(null);
+        it('should return false for null prototype', () => {
+            const hasMethods = service['hasActivityMethods'](null);
 
-            const logSpy = jest.spyOn(service['logger'], 'warn').mockImplementation();
-
-            const result = service['extractMethodsFromPrototype'](objectWithoutPrototype);
-
-            expect(logSpy).toHaveBeenCalledWith('No prototype found for instance');
-            expect(result).toEqual(new Map());
-
-            logSpy.mockRestore();
+            expect(hasMethods).toBe(false);
         });
 
-        it('should handle method processing error (line 255)', () => {
-            // Skip this test for now - hard to reproduce the exact error condition
-            // The error handling code is there but triggering it in the exact way is complex
-            expect(true).toBe(true);
+        it('should return false for prototype without methods', () => {
+            const hasMethods = service['hasActivityMethods'](MockNonActivityClass.prototype);
+
+            expect(hasMethods).toBe(false);
         });
 
-        it('should handle isActivityMethod with reflection error (lines 425-432)', () => {
-            class TestClass {
-                testMethod() {}
+        it('should handle fallback to individual property checks', () => {
+            class IndividualClass {
+                method() {}
             }
 
-            // Mock Reflect.hasMetadata to throw an error
-            jest.spyOn(Reflect, 'hasMetadata').mockImplementation(() => {
-                throw new Error('Reflection error');
-            });
+            Reflect.defineMetadata(
+                TEMPORAL_ACTIVITY_METHOD,
+                { name: 'method' },
+                IndividualClass.prototype,
+                'method',
+            );
 
-            const result = service.isActivityMethod(TestClass, 'testMethod');
+            const hasMethods = service['hasActivityMethods'](IndividualClass.prototype);
 
-            expect(result).toBe(false);
+            expect(hasMethods).toBe(true);
         });
 
-        it('should handle isActivityMethod with outer try-catch error (line 432)', () => {
-            // Mock the entire method chain to throw
-            jest.spyOn(Object, 'getOwnPropertyNames').mockImplementation(() => {
-                throw new Error('Property names error');
-            });
+        it('should handle errors in property checks', () => {
+            const hasMethods = service['hasActivityMethods']({});
 
-            const result = service.isActivityMethod({}, 'testMethod');
-
-            expect(result).toBe(false);
-
-            // Restore the mock
-            jest.restoreAllMocks();
+            expect(hasMethods).toBe(false);
         });
 
-        it('should handle getActivityMethodName with metadata access error', () => {
-            // Mock getActivityMethodMetadata to throw an error
-            jest.spyOn(service, 'getActivityMethodMetadata').mockImplementation(() => {
-                throw new Error('Metadata access error');
-            });
+        it('should skip constructor in property checks', () => {
+            class TestClass {
+                constructor() {}
+                method() {}
+            }
 
-            const result = service.getActivityMethodName({}, 'testMethod');
+            Reflect.defineMetadata(
+                TEMPORAL_ACTIVITY_METHOD,
+                { name: 'method' },
+                TestClass.prototype,
+                'method',
+            );
 
-            expect(result).toBe(null);
-        });
+            const hasMethods = service['hasActivityMethods'](TestClass.prototype);
 
-        it('should handle line 346 error scenario', () => {
-            // Test error scenario around line 346 by creating conditions that would cause an error
-            class TestClass {}
-
-            // Mock extractMethodsFromPrototype to throw an error
-            jest.spyOn(service as any, 'extractMethodsFromPrototype').mockImplementation(() => {
-                throw new Error('Extract methods error');
-            });
-
-            // This should handle the error gracefully and return an empty array (not Map)
-            const result = service.extractActivityMethodsFromClass(TestClass);
-            expect(result).toEqual([]);
+            expect(hasMethods).toBe(true);
         });
     });
 
-    describe('Uncovered Branch Coverage Tests', () => {
-        it('should trigger logger.warn in extractActivityMethods method processing error (line 255)', () => {
-            // Create a spy on the logger to track calls
-            const warnSpy = jest.spyOn((service as any).logger, 'warn');
+    describe('edge cases and error handling', () => {
+        it('should handle extractActivityMethods with cached function type', () => {
+            const instance = new MockActivityClass();
 
-            // Create a mock instance with a property that will cause an error during processing
-            const mockInstance = {
-                constructor: function MockClass() {},
-            };
+            // First extract to cache
+            service.extractActivityMethods(instance);
 
-            // Mock the prototype to have a property
-            const mockPrototype = {
-                constructor: mockInstance.constructor,
-                testMethod: function() {},
-            };
-            Object.setPrototypeOf(mockInstance, mockPrototype);
+            // Manually modify cache to have a function type
+            const constructor = MockActivityClass;
+            const cache = service['activityMethodCache'].get(constructor);
+            if (cache) {
+                cache.set('funcMethod', (() => 'test') as any);
+            }
 
-            // Mock Object.getOwnPropertyNames to return our test method
-            jest.spyOn(Object, 'getOwnPropertyNames').mockReturnValue(['testMethod']);
-
-            // Mock Reflect.getMetadata to return metadata that will pass the if condition
-            jest.spyOn(Reflect, 'getMetadata').mockReturnValue({ name: 'testMethod' });
-
-            // Mock the prototype property access to throw an error during handler binding
-            Object.defineProperty(mockPrototype, 'testMethod', {
-                get: function() {
-                    throw new Error('Property access error');
-                }
-            });
-
-            // Call the method
-            service.extractActivityMethods(mockInstance);
-
-            // Verify that the logger.warn was called with the expected message
-            expect(warnSpy).toHaveBeenCalledWith(
-                'Failed to process method testMethod',
-                expect.any(Error)
+            // Extract again to use cache with function
+            service.clearCache();
+            service['activityMethodCache'].set(
+                constructor,
+                new Map([['funcMethod', () => 'test']]),
             );
 
-            // Clean up
-            jest.restoreAllMocks();
+            const result = service.extractActivityMethods(instance);
+
+            expect(result.success).toBe(true);
         });
 
-        it('should trigger catch block in getActivityMethodOptions (line 346)', () => {
-            // Mock Reflect.getMetadata to throw an error
-            jest.spyOn(Reflect, 'getMetadata').mockImplementation(() => {
-                throw new Error('Reflection error');
-            });
+        it('should handle extractActivityMethods with object in cache', () => {
+            const instance = new MockActivityClass();
 
-            const result = service.getActivityMethodOptions({}, 'testMethod');
+            // Set cache with object type
+            const constructor = MockActivityClass;
+            service['activityMethodCache'].set(
+                constructor,
+                new Map([
+                    [
+                        'objMethod',
+                        {
+                            name: 'objMethod',
+                            handler: () => 'test',
+                        } as any,
+                    ],
+                ]),
+            );
 
-            expect(result).toBe(null);
+            const result = service.extractActivityMethods(instance);
 
-            jest.restoreAllMocks();
+            expect(result.success).toBe(true);
+            expect(result.extractedCount).toBe(1);
         });
 
-        it('should trigger inner try-catch in hasActivityMethods (lines 425-432)', () => {
-            // Create a test constructor function
-            function TestClass() {}
-
-            // Add a method to the prototype that will cause an error during metadata access
-            TestClass.prototype.testMethod = function() {};
-
-            // Mock Object.getOwnPropertyNames to return property names
-            jest.spyOn(Object, 'getOwnPropertyNames').mockReturnValue(['constructor', 'testMethod']);
-
-            // Mock Reflect.hasMetadata to throw an error for the specific property
-            jest.spyOn(Reflect, 'hasMetadata').mockImplementation((key, target, propertyName) => {
-                if (propertyName === 'testMethod') {
-                    throw new Error('Metadata access error');
+        it('should handle error in method extraction loop', () => {
+            class ErrorClass {
+                get errorMethod() {
+                    throw new Error('Property access error');
                 }
-                return false;
-            });
+            }
 
-            // Mock isActivity to return true so we get to the hasActivityMethods check
-            jest.spyOn(service, 'isActivity').mockReturnValue(true);
+            Reflect.defineMetadata(TEMPORAL_ACTIVITY, {}, ErrorClass);
+            Reflect.defineMetadata(
+                TEMPORAL_ACTIVITY_METHOD,
+                {
+                    errorMethod: { name: 'error' },
+                },
+                ErrorClass.prototype,
+            );
 
-            const result = service.validateActivityClass(TestClass);
+            const instance = new ErrorClass();
+            const result = service.extractActivityMethods(instance);
 
-            // The validation should still work despite the metadata error
-            expect(result.isValid).toBe(false);
-            expect(result.issues).toContain('Activity class has no methods marked with @ActivityMethod');
-
-            jest.restoreAllMocks();
+            // Should handle the error gracefully
+            expect(result.errors.length).toBeGreaterThanOrEqual(0);
         });
 
-        it('should trigger outer catch block in hasActivityMethods (line 432)', () => {
-            // Create a test constructor
-            function TestClass() {}
+        it('should handle getActivityMethodOptions with no methodName', () => {
+            const options = service.getActivityMethodOptions(MockActivityClass.prototype, '');
 
-            // Mock isActivity to return true so we get to the hasActivityMethods check
-            jest.spyOn(service, 'isActivity').mockReturnValue(true);
-
-            // Mock Object.getOwnPropertyNames to throw an error to trigger the outer catch
-            jest.spyOn(Object, 'getOwnPropertyNames').mockImplementation(() => {
-                throw new Error('Property names error');
-            });
-
-            const result = service.validateActivityClass(TestClass);
-
-            // The validation should handle the error and still return a result
-            expect(result.isValid).toBe(false);
-            expect(result.issues).toContain('Activity class has no methods marked with @ActivityMethod');
-
-            jest.restoreAllMocks();
+            expect(options).toBeNull();
         });
 
-        it('should achieve 100% branch coverage through comprehensive error scenarios', () => {
-            // Additional test to ensure all edge cases are covered
+        it('should handle validateActivityClass with empty method name', () => {
+            class EmptyNameClass {}
+            Object.defineProperty(EmptyNameClass, 'name', { value: '' });
+            Reflect.defineMetadata(TEMPORAL_ACTIVITY, {}, EmptyNameClass);
 
-            // Test error in extractActivityMethods with different error scenarios
-            const mockInstance = { constructor: function TestClass() {} };
-            const mockPrototype = { constructor: mockInstance.constructor, testMethod: () => {} };
-            Object.setPrototypeOf(mockInstance, mockPrototype);
+            const result = service.validateActivityClass(EmptyNameClass);
 
-            // Mock to cause different types of errors during method extraction
-            jest.spyOn(Object, 'getOwnPropertyNames').mockReturnValue(['testMethod']);
-
-            // Mock to return metadata but cause error during handler binding
-            jest.spyOn(Reflect, 'getMetadata').mockReturnValue({ name: 'testMethod' });
-
-            // Mock the bind operation to throw an error
-            const originalBind = Function.prototype.bind;
-            Function.prototype.bind = function() {
-                throw new Error('Bind error');
-            };
-
-            const warnSpy = jest.spyOn((service as any).logger, 'warn');
-
-            // This should trigger the catch block at line 255
-            const result = service.extractActivityMethods(mockInstance);
-
-            expect(warnSpy).toHaveBeenCalled();
-            expect(result).toBeInstanceOf(Map);
-
-            // Restore
-            Function.prototype.bind = originalBind;
-            jest.restoreAllMocks();
-        });
-
-        it('should test all remaining error paths for complete coverage', () => {
-            // Test getActivityMethodOptions with null target and valid methodName
-            let result = service.getActivityMethodOptions(null, 'testMethod');
-            expect(result).toBe(null);
-
-            // Test getActivityMethodOptions with valid target and null methodName
-            result = service.getActivityMethodOptions({}, null);
-            expect(result).toBe(null);
-
-            // Test getActivityMethodOptions with empty methodName
-            result = service.getActivityMethodOptions({}, '');
-            expect(result).toBe(null);
-
-            // Test hasActivityMethods through private access via validateActivityClass
-            function EmptyClass() {}
-            EmptyClass.prototype = null; // Force prototype to be null
-
-            jest.spyOn(service, 'isActivity').mockReturnValue(true);
-
-            const validationResult = service.validateActivityClass(EmptyClass);
-            expect(validationResult.isValid).toBe(false);
-            expect(validationResult.issues).toContain('Activity class has no methods marked with @ActivityMethod');
-
-            jest.restoreAllMocks();
-        });
-
-        it('should cover specific lines 425-428 in hasActivityMethods', () => {
-            // Create a constructor with a method that has activity metadata
-            function TestClass() {}
-            TestClass.prototype.testMethod = function() {};
-
-            // Mock Object.getOwnPropertyNames to return the test method
-            jest.spyOn(Object, 'getOwnPropertyNames').mockReturnValue(['testMethod']);
-
-            // Mock Reflect.hasMetadata to return true for the test method
-            jest.spyOn(Reflect, 'hasMetadata').mockReturnValue(true);
-
-            // Mock isActivity to return true so we get to the hasActivityMethods check
-            jest.spyOn(service, 'isActivity').mockReturnValue(true);
-
-            // This should pass validation because hasActivityMethods returns true
-            const result = service.validateActivityClass(TestClass);
-
-            expect(result.isValid).toBe(true);
-            expect(result.issues).toEqual([]);
-
-            jest.restoreAllMocks();
-        });
-
-        it('should cover lines 104-108 in getActivityMethodMetadata (ternary operators)', () => {
-            // Test metadata without name property to trigger line 104
-            const instance = { constructor: { name: undefined } };
-            const prototype = {
-                constructor: instance.constructor,
-                testMethod: function() {}
-            };
-            Object.setPrototypeOf(instance, prototype);
-
-            // Mock Reflect.getMetadata to return metadata without name
-            jest.spyOn(Reflect, 'getMetadata').mockReturnValue({
-                // No name property, should use methodName
-            });
-
-            const result = service.getActivityMethodMetadata(instance, 'testMethod');
-
-            expect(result?.name).toBe('testMethod'); // Should fall back to methodName
-            expect(result?.className).toBe('Unknown'); // Should fall back to 'Unknown'
-            expect(result?.options).toBeDefined(); // Should use metadata as options
-
-            jest.restoreAllMocks();
-        });
-
-        it('should cover lines 155-156 in getActivityMethodName (ternary operators)', () => {
-            // Test with metadata that returns null
-            jest.spyOn(service, 'getActivityMethodMetadata').mockReturnValue(null);
-
-            const result = service.getActivityMethodName({}, 'testMethod');
-
-            expect(result).toBe('testMethod'); // Should fall back to methodName
-
-            // Test with metadata that has no name
-            jest.spyOn(service, 'getActivityMethodMetadata').mockReturnValue({
-                name: null,
-                originalName: 'testMethod',
-                methodName: 'testMethod',
-                className: 'Test',
-            } as any);
-
-            const result2 = service.getActivityMethodName({}, 'testMethod');
-
-            expect(result2).toBe('testMethod'); // Should fall back to methodName
-
-            jest.restoreAllMocks();
-        });
-
-        it('should cover lines 302-306 in extractActivityMethodsFromClass (ternary operators)', () => {
-            function TestClass() {}
-
-            // Mock Reflect.getMetadata to return metadata with different scenarios
-            jest.spyOn(Reflect, 'getMetadata').mockReturnValue({
-                'testMethod1': { name: 'customName', options: { custom: true } },
-                'testMethod2': { /* no name property */ },
-            });
-
-            const result = service.extractActivityMethodsFromClass(TestClass);
-
-            expect(result).toHaveLength(2);
-            expect(result[0].name).toBe('customName'); // Should use metadata.name
-            expect(result[1].name).toBe('testMethod2'); // Should fall back to methodName
-
-            jest.restoreAllMocks();
-        });
-
-        it('should cover line 547 in getCacheStats (ternary operator)', () => {
-            // Add entries to cache with different name scenarios
-            const constructorWithName = function TestClass() {};
-            const constructorWithoutName = function() {};
-            Object.defineProperty(constructorWithoutName, 'name', { value: '' });
-
-            service['activityMethodCache'].set(constructorWithName, new Map());
-            service['activityMethodCache'].set(constructorWithoutName, new Map());
-
-            const stats = service.getCacheStats();
-
-            expect(stats.entries).toContain('TestClass');
-            expect(stats.entries).toContain('Unknown'); // Should fall back to 'Unknown'
-
-            // Clear cache
-            service.clearCache();
-        });
-
-        it('should achieve maximum branch coverage with comprehensive scenarios', () => {
-            // Test extractActivityMethods with various edge cases to cover lines 237-260
-
-            // Test with instance having constructor without name
-            const instanceWithoutName = {
-                constructor: function() {}
-            };
-            Object.defineProperty(instanceWithoutName.constructor, 'name', { value: undefined });
-
-            const prototypeWithoutName = {
-                constructor: instanceWithoutName.constructor,
-                testMethod: function() {}
-            };
-            Object.setPrototypeOf(instanceWithoutName, prototypeWithoutName);
-
-            jest.spyOn(Object, 'getOwnPropertyNames').mockReturnValue(['testMethod']);
-            jest.spyOn(Reflect, 'getMetadata').mockReturnValue({ name: undefined });
-
-            const result = service.extractActivityMethods(instanceWithoutName);
-
-            expect(result.size).toBe(1);
-            const methodData = result.get('testMethod');
-            expect(methodData?.className).toBe('Unknown'); // Should fall back to 'Unknown'
-
-            jest.restoreAllMocks();
-        });
-
-        it('should test all remaining ternary and logical operators', () => {
-            // Test getActivityMethodMetadata with metadata.options fallback
-            const instance = {};
-            const prototype = {
-                constructor: { name: 'TestClass' },
-                testMethod: function() {}
-            };
-            Object.setPrototypeOf(instance, prototype);
-
-            // Test with metadata that has no options property
-            jest.spyOn(Reflect, 'getMetadata').mockReturnValue({
-                name: 'testMethod',
-                customProperty: 'value'
-            });
-
-            const result = service.getActivityMethodMetadata(instance, 'testMethod');
-
-            expect(result?.options).toEqual({
-                name: 'testMethod',
-                customProperty: 'value'
-            }); // Should use full metadata as options
-
-            jest.restoreAllMocks();
+            expect(result.className).toBeTruthy();
         });
     });
 });

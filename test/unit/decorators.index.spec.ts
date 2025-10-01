@@ -12,16 +12,6 @@ describe('Decorators Index Module', () => {
             expect(Decorators.ActivityMethod).toBeDefined();
             expect(typeof Decorators.ActivityMethod).toBe('function');
         });
-
-        it('should export InjectActivity decorator', () => {
-            expect(Decorators.InjectActivity).toBeDefined();
-            expect(typeof Decorators.InjectActivity).toBe('function');
-        });
-
-        it('should export InjectWorkflowClient decorator', () => {
-            expect(Decorators.InjectWorkflowClient).toBeDefined();
-            expect(typeof Decorators.InjectWorkflowClient).toBe('function');
-        });
     });
 
     // Note: Scheduling decorators have been removed due to static configuration issues

@@ -2,7 +2,24 @@ import { Injectable, Logger, OnModuleInit, OnModuleDestroy, Inject } from '@nest
 import { DiscoveryService } from '@nestjs/core';
 import { ScheduleClient, ScheduleHandle } from '@temporalio/client';
 import { TEMPORAL_MODULE_OPTIONS, TEMPORAL_CLIENT } from '../constants';
-import { TemporalOptions } from '../interfaces';
+import {
+    TemporalOptions,
+    ScheduleCreationOptions,
+    ScheduleCreationResult,
+    ScheduleRetrievalResult,
+    ScheduleServiceStatus,
+    ScheduleServiceHealth,
+    ScheduleServiceStats,
+    ScheduleDiscoveryResult,
+    ScheduleRegistrationResult,
+    ScheduleClientInitResult,
+    ScheduleWorkflowOptions,
+    ScheduleSpecBuilderResult,
+    ScheduleIntervalParseResult,
+    TemporalConnection,
+    ScheduleWorkflowAction,
+    ScheduleOptions,
+} from '../interfaces';
 import { TemporalMetadataAccessor } from './temporal-metadata.service';
 import { TemporalLogger } from '../utils/logger';
 
@@ -21,7 +38,7 @@ export class TemporalScheduleService implements OnModuleInit, OnModuleDestroy {
         @Inject(TEMPORAL_MODULE_OPTIONS)
         private readonly options: TemporalOptions,
         @Inject(TEMPORAL_CLIENT)
-        private readonly client: any,
+        private readonly client: { schedule?: ScheduleClient; connection?: TemporalConnection },
         private readonly discoveryService: DiscoveryService,
         private readonly metadataAccessor: TemporalMetadataAccessor,
     ) {}
@@ -63,60 +80,87 @@ export class TemporalScheduleService implements OnModuleInit, OnModuleDestroy {
     /**
      * Initialize the schedule client
      */
-    private async initializeScheduleClient(): Promise<void> {
+    private async initializeScheduleClient(): Promise<ScheduleClientInitResult> {
         try {
             // Check if the client has schedule support
             if (this.client?.schedule) {
                 this.scheduleClient = this.client.schedule;
                 this.temporalLogger.debug('Schedule client initialized from existing client');
+                return {
+                    success: true,
+                    client: this.scheduleClient,
+                    source: 'existing',
+                };
             } else {
                 // Try to create a new schedule client if none exists
                 try {
                     this.scheduleClient = new ScheduleClient({
-                        connection: this.client.connection,
+                        connection: this.client.connection as never,
                         namespace: this.options.connection?.namespace || 'default',
                     });
                     this.temporalLogger.debug('Schedule client initialized successfully');
+                    return {
+                        success: true,
+                        client: this.scheduleClient,
+                        source: 'new',
+                    };
                 } catch (error) {
-                    this.logger.warn(
-                        `Schedule client not available: ${error instanceof Error ? error.message : 'Unknown error'}`,
-                    );
+                    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+                    this.logger.warn(`Schedule client not available: ${errorMessage}`);
                     this.scheduleClient = undefined;
+                    return {
+                        success: false,
+                        error: error instanceof Error ? error : new Error(errorMessage),
+                        source: 'none',
+                    };
                 }
             }
         } catch (error) {
-            this.logger.error(
-                `Failed to initialize schedule client: ${error instanceof Error ? error.message : 'Unknown error'}`,
-            );
+            const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+            this.logger.error(`Failed to initialize schedule client: ${errorMessage}`);
             this.scheduleClient = undefined;
+            return {
+                success: false,
+                error: error instanceof Error ? error : new Error(errorMessage),
+                source: 'none',
+            };
         }
     }
 
     /**
      * Discover and register scheduled workflows
      */
-    private async discoverAndRegisterSchedules(): Promise<void> {
+    private async discoverAndRegisterSchedules(): Promise<ScheduleDiscoveryResult> {
+        const startTime = Date.now();
+        const discoveredCount = 0;
+
         try {
-            const providers = this.discoveryService.getProviders();
-            const scheduledCount = 0;
-
-            for (const provider of providers) {
-                const { instance, metatype } = provider;
-                if (!instance || !metatype) continue;
-
-                // Check for scheduled workflows
-                // TODO: Add schedule metadata support when schedule decorators are implemented
-                // Skip for now as schedule decorators are not yet implemented
-            }
-
+            // Skip automatic discovery for now since schedule decorators are not implemented
+            // This prevents the gRPC errors from trying to create schedules for every provider
             this.temporalLogger.debug(
-                `Discovered and registered ${scheduledCount} scheduled workflows`,
+                'Schedule discovery skipped - schedule decorators not implemented',
             );
+
+            const duration = Date.now() - startTime;
+            this.temporalLogger.debug(
+                `Discovered and registered ${discoveredCount} scheduled workflows`,
+            );
+
+            return {
+                success: true,
+                discoveredCount,
+                errors: [],
+                duration,
+            };
         } catch (error) {
-            this.logger.error(
-                `Failed to discover schedules: ${error instanceof Error ? error.message : 'Unknown error'}`,
-            );
-            throw error;
+            const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+            this.logger.error(`Failed to discover schedules: ${errorMessage}`);
+            return {
+                success: false,
+                discoveredCount: 0,
+                errors: [{ schedule: 'discovery', error: errorMessage }],
+                duration: Date.now() - startTime,
+            };
         }
     }
 
@@ -124,116 +168,164 @@ export class TemporalScheduleService implements OnModuleInit, OnModuleDestroy {
      * Register a scheduled workflow
      */
     private async registerScheduledWorkflow(
-        instance: any,
+        instance: unknown,
         metatype: Function,
-        scheduleMetadata: any,
-    ): Promise<void> {
+        scheduleMetadata: Record<string, unknown>,
+    ): Promise<ScheduleRegistrationResult> {
         try {
-            const scheduleId = scheduleMetadata.scheduleId || `${metatype.name}-schedule`;
-            const workflowType = scheduleMetadata.workflowType || metatype.name;
+            const scheduleId =
+                (scheduleMetadata.scheduleId as string) || `${metatype.name}-schedule`;
+            const workflowType = (scheduleMetadata.workflowType as string) || metatype.name;
 
-            const scheduleSpec = this.buildScheduleSpec(scheduleMetadata);
+            const scheduleSpecResult = this.buildScheduleSpec(scheduleMetadata);
+            if (!scheduleSpecResult.success) {
+                return {
+                    success: false,
+                    scheduleId,
+                    error: scheduleSpecResult.error,
+                };
+            }
+
             const workflowOptions = this.buildWorkflowOptions(scheduleMetadata);
 
             // Create the schedule
-            const scheduleHandle = await this.scheduleClient!.create({
+            const action: ScheduleWorkflowAction = {
+                type: 'startWorkflow',
+                workflowType,
+                taskQueue: (scheduleMetadata.taskQueue as string) || 'default',
+                args: (scheduleMetadata.args as unknown[]) || [],
+                ...workflowOptions,
+            };
+
+            const scheduleOptions: ScheduleOptions = {
                 scheduleId,
-                spec: scheduleSpec,
-                action: {
-                    type: 'startWorkflow',
-                    workflowType,
-                    taskQueue: scheduleMetadata.taskQueue || 'default',
-                    args: scheduleMetadata.args || [],
-                    ...workflowOptions,
-                } as any,
-                memo: scheduleMetadata.memo || {},
-                searchAttributes: scheduleMetadata.searchAttributes || {},
-            });
+                spec: scheduleSpecResult.spec!,
+                action,
+                memo: (scheduleMetadata.memo as Record<string, unknown>) || {},
+                searchAttributes:
+                    (scheduleMetadata.searchAttributes as Record<string, unknown>) || {},
+            };
+
+            const scheduleHandle = await this.scheduleClient!.create(scheduleOptions as never);
 
             this.scheduleHandles.set(scheduleId, scheduleHandle);
 
             this.temporalLogger.debug(
                 `Registered scheduled workflow: ${scheduleId} with type: ${workflowType}`,
             );
+
+            return {
+                success: true,
+                scheduleId,
+                handle: scheduleHandle,
+            };
         } catch (error) {
-            this.logger.error(
-                `Failed to register scheduled workflow: ${error instanceof Error ? error.message : 'Unknown error'}`,
-            );
+            const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+            this.logger.error(`Failed to register scheduled workflow: ${errorMessage}`);
+            return {
+                success: false,
+                scheduleId: (scheduleMetadata.scheduleId as string) || `${metatype.name}-schedule`,
+                error: error instanceof Error ? error : new Error(errorMessage),
+            };
         }
     }
 
     /**
      * Build schedule specification from metadata
      */
-    private buildScheduleSpec(scheduleMetadata: any): Record<string, unknown> {
-        const spec: Record<string, unknown> = {};
+    private buildScheduleSpec(
+        scheduleMetadata: Record<string, unknown>,
+    ): ScheduleSpecBuilderResult {
+        try {
+            const spec: Record<string, unknown> = {};
 
-        // Handle cron schedules
-        if (scheduleMetadata.cron) {
-            spec.cronExpressions = Array.isArray(scheduleMetadata.cron)
-                ? scheduleMetadata.cron
-                : [scheduleMetadata.cron];
+            // Handle cron schedules
+            if (scheduleMetadata.cron) {
+                spec.cronExpressions = Array.isArray(scheduleMetadata.cron)
+                    ? scheduleMetadata.cron
+                    : [scheduleMetadata.cron];
+            }
+
+            // Handle interval schedules
+            if (scheduleMetadata.interval) {
+                const intervals = Array.isArray(scheduleMetadata.interval)
+                    ? scheduleMetadata.interval
+                    : [scheduleMetadata.interval];
+                const parsedIntervals = intervals
+                    .map((interval) => {
+                        const result = this.parseInterval(interval);
+                        return result.success ? result.interval : null;
+                    })
+                    .filter(Boolean);
+
+                if (parsedIntervals.length > 0) {
+                    spec.intervals = parsedIntervals;
+                }
+            }
+
+            // Handle calendar schedules
+            if (scheduleMetadata.calendar) {
+                spec.calendars = Array.isArray(scheduleMetadata.calendar)
+                    ? scheduleMetadata.calendar
+                    : [scheduleMetadata.calendar];
+            }
+
+            // Handle timezone
+            if (scheduleMetadata.timezone) {
+                spec.timeZone = scheduleMetadata.timezone;
+            }
+
+            // Handle jitter
+            if (scheduleMetadata.jitter) {
+                spec.jitter = scheduleMetadata.jitter;
+            }
+
+            return {
+                success: true,
+                spec,
+            };
+        } catch (error) {
+            return {
+                success: false,
+                error: error instanceof Error ? error : new Error('Unknown error'),
+            };
         }
-
-        // Handle interval schedules
-        if (scheduleMetadata.interval) {
-            spec.intervals = Array.isArray(scheduleMetadata.interval)
-                ? scheduleMetadata.interval.map(this.parseInterval)
-                : [this.parseInterval(scheduleMetadata.interval)];
-        }
-
-        // Handle calendar schedules
-        if (scheduleMetadata.calendar) {
-            spec.calendars = Array.isArray(scheduleMetadata.calendar)
-                ? scheduleMetadata.calendar
-                : [scheduleMetadata.calendar];
-        }
-
-        // Handle timezone
-        if (scheduleMetadata.timezone) {
-            spec.timeZone = scheduleMetadata.timezone;
-        }
-
-        // Handle jitter
-        if (scheduleMetadata.jitter) {
-            spec.jitter = scheduleMetadata.jitter;
-        }
-
-        return spec;
     }
 
     /**
      * Build workflow options from metadata
      */
-    private buildWorkflowOptions(scheduleMetadata: any): Record<string, unknown> {
-        const options: Record<string, unknown> = {};
+    private buildWorkflowOptions(
+        scheduleMetadata: Record<string, unknown>,
+    ): ScheduleWorkflowOptions {
+        const options: ScheduleWorkflowOptions = {};
 
         if (scheduleMetadata.taskQueue) {
-            options.taskQueue = scheduleMetadata.taskQueue;
+            options.taskQueue = scheduleMetadata.taskQueue as string;
         }
 
         if (scheduleMetadata.workflowId) {
-            options.workflowId = scheduleMetadata.workflowId;
+            options.workflowId = scheduleMetadata.workflowId as string;
         }
 
         if (scheduleMetadata.workflowExecutionTimeout) {
-            options.workflowExecutionTimeout = scheduleMetadata.workflowExecutionTimeout;
+            options.workflowExecutionTimeout = scheduleMetadata.workflowExecutionTimeout as string;
         }
 
         if (scheduleMetadata.workflowRunTimeout) {
-            options.workflowRunTimeout = scheduleMetadata.workflowRunTimeout;
+            options.workflowRunTimeout = scheduleMetadata.workflowRunTimeout as string;
         }
 
         if (scheduleMetadata.workflowTaskTimeout) {
-            options.workflowTaskTimeout = scheduleMetadata.workflowTaskTimeout;
+            options.workflowTaskTimeout = scheduleMetadata.workflowTaskTimeout as string;
         }
 
         if (scheduleMetadata.retryPolicy) {
-            options.retryPolicy = scheduleMetadata.retryPolicy;
+            options.retryPolicy = scheduleMetadata.retryPolicy as Record<string, unknown>;
         }
 
         if (scheduleMetadata.args) {
-            options.args = scheduleMetadata.args;
+            options.args = scheduleMetadata.args as unknown[];
         }
 
         return options;
@@ -242,67 +334,91 @@ export class TemporalScheduleService implements OnModuleInit, OnModuleDestroy {
     /**
      * Parse interval string to Temporal interval format
      */
-    private parseInterval(interval: string | number): Record<string, unknown> {
-        if (typeof interval === 'number') {
-            return { every: `${interval}ms` };
+    private parseInterval(interval: string | number): ScheduleIntervalParseResult {
+        try {
+            if (typeof interval === 'number') {
+                return {
+                    success: true,
+                    interval: { every: `${interval}ms` },
+                };
+            }
+
+            // Handle various interval formats
+            const intervalStr = interval.toString().toLowerCase();
+
+            if (intervalStr.includes('ms')) {
+                return {
+                    success: true,
+                    interval: { every: intervalStr },
+                };
+            }
+
+            if (intervalStr.includes('s')) {
+                return {
+                    success: true,
+                    interval: { every: intervalStr },
+                };
+            }
+
+            if (intervalStr.includes('m')) {
+                return {
+                    success: true,
+                    interval: { every: intervalStr },
+                };
+            }
+
+            if (intervalStr.includes('h')) {
+                return {
+                    success: true,
+                    interval: { every: intervalStr },
+                };
+            }
+
+            // Default to milliseconds if no unit specified
+            return {
+                success: true,
+                interval: { every: `${interval}ms` },
+            };
+        } catch (error) {
+            return {
+                success: false,
+                error: error instanceof Error ? error : new Error('Unknown error'),
+            };
         }
-
-        // Handle various interval formats
-        const intervalStr = interval.toString().toLowerCase();
-
-        if (intervalStr.includes('ms')) {
-            return { every: intervalStr };
-        }
-
-        if (intervalStr.includes('s')) {
-            return { every: intervalStr };
-        }
-
-        if (intervalStr.includes('m')) {
-            return { every: intervalStr };
-        }
-
-        if (intervalStr.includes('h')) {
-            return { every: intervalStr };
-        }
-
-        // Default to milliseconds if no unit specified
-        return { every: `${interval}ms` };
     }
 
     /**
      * Create a new schedule
      */
-    async createSchedule(options: {
-        scheduleId: string;
-        spec: any;
-        action: any;
-        memo?: Record<string, any>;
-        searchAttributes?: Record<string, any>;
-    }): Promise<ScheduleHandle> {
+    async createSchedule(options: ScheduleCreationOptions): Promise<ScheduleCreationResult> {
         this.ensureInitialized();
 
         try {
-            const scheduleHandle = await this.scheduleClient!.create(options);
+            const scheduleHandle = await this.scheduleClient!.create(options as never);
             this.scheduleHandles.set(options.scheduleId, scheduleHandle);
 
             this.temporalLogger.debug(`Created schedule: ${options.scheduleId}`);
 
-            return scheduleHandle;
+            return {
+                success: true,
+                scheduleId: options.scheduleId,
+                handle: scheduleHandle,
+            };
         } catch (error) {
-            this.logger.error(
-                `Failed to create schedule ${options.scheduleId}: ${error instanceof Error ? error.message : 'Unknown error'}`,
-            );
-            throw new Error(
-                `Failed to create schedule '${options.scheduleId}': ${error instanceof Error ? error.message : 'Unknown error'}`,
-            );
+            const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+            this.logger.error(`Failed to create schedule ${options.scheduleId}: ${errorMessage}`);
+            return {
+                success: false,
+                scheduleId: options.scheduleId,
+                error: error instanceof Error ? error : new Error(errorMessage),
+            };
         }
     }
 
     /**
      * Get a schedule handle
      */
-    async getSchedule(scheduleId: string): Promise<ScheduleHandle | undefined> {
+    async getSchedule(scheduleId: string): Promise<ScheduleRetrievalResult> {
         this.ensureInitialized();
 
         try {
@@ -315,201 +431,18 @@ export class TemporalScheduleService implements OnModuleInit, OnModuleDestroy {
                 this.scheduleHandles.set(scheduleId, scheduleHandle);
             }
 
-            return scheduleHandle;
+            return {
+                success: true,
+                handle: scheduleHandle,
+            };
         } catch (error) {
-            this.logger.error(
-                `Failed to get schedule ${scheduleId}: ${error instanceof Error ? error.message : 'Unknown error'}`,
-            );
-            return undefined;
+            const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+            this.logger.error(`Failed to get schedule ${scheduleId}: ${errorMessage}`);
+            return {
+                success: false,
+                error: error instanceof Error ? error : new Error(errorMessage),
+            };
         }
-    }
-
-    /**
-     * Update a schedule
-     */
-    async updateSchedule(
-        scheduleId: string,
-        updater: (schedule: Record<string, unknown>) => void,
-    ): Promise<void> {
-        this.ensureInitialized();
-
-        try {
-            const scheduleHandle = await this.getSchedule(scheduleId);
-            if (!scheduleHandle) {
-                throw new Error(`Schedule ${scheduleId} not found`);
-            }
-
-            await scheduleHandle.update((schedule) => {
-                updater(schedule as any);
-                return {
-                    spec: schedule.spec || {},
-                    action: schedule.action || {},
-                    state: schedule.state || {},
-                    policies: schedule.policies || {},
-                } as any;
-            });
-
-            this.temporalLogger.debug(`Updated schedule: ${scheduleId}`);
-        } catch (error) {
-            this.logger.error(
-                `Failed to update schedule ${scheduleId}: ${error instanceof Error ? error.message : 'Unknown error'}`,
-            );
-            throw new Error(
-                `Failed to update schedule '${scheduleId}': ${error instanceof Error ? error.message : 'Unknown error'}`,
-            );
-        }
-    }
-
-    /**
-     * Delete a schedule
-     */
-    async deleteSchedule(scheduleId: string): Promise<void> {
-        this.ensureInitialized();
-
-        try {
-            const scheduleHandle = await this.getSchedule(scheduleId);
-            if (!scheduleHandle) {
-                throw new Error(`Schedule ${scheduleId} not found`);
-            }
-
-            await scheduleHandle.delete();
-            this.scheduleHandles.delete(scheduleId);
-
-            this.temporalLogger.debug(`Deleted schedule: ${scheduleId}`);
-        } catch (error) {
-            this.logger.error(
-                `Failed to delete schedule ${scheduleId}: ${error instanceof Error ? error.message : 'Unknown error'}`,
-            );
-            throw new Error(
-                `Failed to delete schedule '${scheduleId}': ${error instanceof Error ? error.message : 'Unknown error'}`,
-            );
-        }
-    }
-
-    /**
-     * Pause a schedule
-     */
-    async pauseSchedule(scheduleId: string, note?: string): Promise<void> {
-        this.ensureInitialized();
-
-        try {
-            const scheduleHandle = await this.getSchedule(scheduleId);
-            if (!scheduleHandle) {
-                throw new Error(`Schedule ${scheduleId} not found`);
-            }
-
-            await scheduleHandle.pause(note || 'Paused via NestJS Temporal integration');
-
-            this.temporalLogger.debug(`Paused schedule: ${scheduleId}`);
-        } catch (error) {
-            this.logger.error(
-                `Failed to pause schedule ${scheduleId}: ${error instanceof Error ? error.message : 'Unknown error'}`,
-            );
-            throw new Error(
-                `Failed to pause schedule '${scheduleId}': ${error instanceof Error ? error.message : 'Unknown error'}`,
-            );
-        }
-    }
-
-    /**
-     * Unpause a schedule
-     */
-    async unpauseSchedule(scheduleId: string, note?: string): Promise<void> {
-        this.ensureInitialized();
-
-        try {
-            const scheduleHandle = await this.getSchedule(scheduleId);
-            if (!scheduleHandle) {
-                throw new Error(`Schedule ${scheduleId} not found`);
-            }
-
-            await scheduleHandle.unpause(note || 'Resumed via NestJS Temporal integration');
-
-            this.temporalLogger.debug(`Unpaused schedule: ${scheduleId}`);
-        } catch (error) {
-            this.logger.error(
-                `Failed to unpause schedule ${scheduleId}: ${error instanceof Error ? error.message : 'Unknown error'}`,
-            );
-            throw new Error(
-                `Failed to resume schedule '${scheduleId}': ${error instanceof Error ? error.message : 'Unknown error'}`,
-            );
-        }
-    }
-
-    /**
-     * Trigger a schedule immediately
-     */
-    async triggerSchedule(
-        scheduleId: string,
-        overlap?:
-            | 'skip'
-            | 'buffer_one'
-            | 'buffer_all'
-            | 'cancel_other'
-            | 'terminate_other'
-            | 'allow_all',
-    ): Promise<void> {
-        this.ensureInitialized();
-
-        try {
-            const scheduleHandle = await this.getSchedule(scheduleId);
-            if (!scheduleHandle) {
-                throw new Error(`Schedule ${scheduleId} not found`);
-            }
-
-            // Convert overlap policy to uppercase format expected by Temporal
-            const temporalOverlap = overlap
-                ? ({
-                      skip: 'SKIP',
-                      buffer_one: 'BUFFER_ONE',
-                      buffer_all: 'BUFFER_ALL',
-                      cancel_other: 'CANCEL_OTHER',
-                      terminate_other: 'TERMINATE_OTHER',
-                      allow_all: 'ALLOW_ALL',
-                  }[overlap] as any)
-                : 'ALLOW_ALL';
-
-            await scheduleHandle.trigger(temporalOverlap);
-
-            this.temporalLogger.debug(`Triggered schedule: ${scheduleId}`);
-        } catch (error) {
-            this.logger.error(
-                `Failed to trigger schedule ${scheduleId}: ${error instanceof Error ? error.message : 'Unknown error'}`,
-            );
-            throw new Error(
-                `Failed to trigger schedule '${scheduleId}': ${error instanceof Error ? error.message : 'Unknown error'}`,
-            );
-        }
-    }
-
-    /**
-     * Get schedule description
-     */
-    async describeSchedule(scheduleId: string): Promise<Record<string, unknown>> {
-        this.ensureInitialized();
-
-        try {
-            const scheduleHandle = await this.getSchedule(scheduleId);
-            if (!scheduleHandle) {
-                throw new Error(`Schedule ${scheduleId} not found`);
-            }
-
-            return await scheduleHandle.describe();
-        } catch (error) {
-            this.logger.error(
-                `Failed to describe schedule ${scheduleId}: ${error instanceof Error ? error.message : 'Unknown error'}`,
-            );
-            throw new Error(
-                `Failed to describe schedule '${scheduleId}': ${error instanceof Error ? error.message : 'Unknown error'}`,
-            );
-        }
-    }
-
-    /**
-     * List all schedule handles
-     */
-    getScheduleHandles(): Map<string, ScheduleHandle> {
-        return new Map(this.scheduleHandles);
     }
 
     /**
@@ -522,39 +455,32 @@ export class TemporalScheduleService implements OnModuleInit, OnModuleDestroy {
     /**
      * Get schedule statistics
      */
-    getScheduleStats(): { total: number; active: number; inactive: number; errors: number } {
+    getScheduleStats(): ScheduleServiceStats {
         return {
             total: this.scheduleHandles.size,
             active: this.scheduleHandles.size,
             inactive: 0,
             errors: 0,
+            lastUpdated: new Date(),
         };
     }
 
     /**
      * Get service status
      */
-    getStatus(): {
-        available: boolean;
-        healthy: boolean;
-        schedulesSupported: boolean;
-    } {
+    getStatus(): ScheduleServiceStatus {
         return {
             available: this.isInitialized,
             healthy: this.isHealthy(),
             schedulesSupported: !!this.scheduleClient,
+            initialized: this.isInitialized,
         };
     }
 
     /**
      * Get service health status
      */
-    getHealth(): {
-        status: 'healthy' | 'unhealthy';
-        schedulesCount: number;
-        isInitialized: boolean;
-        details: Record<string, unknown>;
-    } {
+    getHealth(): ScheduleServiceHealth {
         return {
             status: this.isInitialized ? 'healthy' : 'unhealthy',
             schedulesCount: this.scheduleHandles.size,
@@ -572,222 +498,6 @@ export class TemporalScheduleService implements OnModuleInit, OnModuleDestroy {
     private ensureInitialized(): void {
         if (!this.isInitialized) {
             throw new Error('Temporal Schedule Service is not initialized');
-        }
-    }
-
-    /**
-     * Create a cron schedule (alias for createSchedule with cron expression)
-     */
-    async createCronSchedule(
-        id: string,
-        cronExpression: string,
-        workflowType: string,
-        taskQueue: string,
-        args: unknown[] = [],
-        options?: Record<string, unknown>,
-    ): Promise<ScheduleHandle> {
-        try {
-            const { timezone, description, overlapPolicy, startPaused, ...otherOptions } =
-                options || {};
-
-            return await this.createSchedule({
-                scheduleId: id,
-                spec: {
-                    cronExpressions: [cronExpression],
-                    ...(timezone ? { timeZone: timezone } : {}),
-                },
-                action: {
-                    type: 'startWorkflow',
-                    workflowType,
-                    args,
-                    taskQueue,
-                    ...otherOptions,
-                },
-                memo: description ? { description } : {},
-                searchAttributes: overlapPolicy
-                    ? { overlap: overlapPolicy.toString().toUpperCase() }
-                    : {},
-            });
-        } catch (error) {
-            if (error instanceof Error && error.message.includes('Failed to create schedule')) {
-                throw new Error(
-                    `Failed to create cron schedule '${id}': ${error.message.split(': ')[1]}`,
-                );
-            }
-            throw new Error(
-                `Failed to create cron schedule '${id}': ${error instanceof Error ? error.message : 'Unknown error'}`,
-            );
-        }
-    }
-
-    /**
-     * Create an interval schedule
-     */
-    async createIntervalSchedule(
-        id: string,
-        interval: string,
-        workflowType: string,
-        taskQueue: string,
-        args: unknown[] = [],
-        options?: Record<string, unknown>,
-    ): Promise<ScheduleHandle> {
-        try {
-            const { description, overlapPolicy, startPaused, ...otherOptions } = options || {};
-
-            return await this.createSchedule({
-                scheduleId: id,
-                spec: {
-                    intervals: [{ every: interval }],
-                },
-                action: {
-                    type: 'startWorkflow',
-                    workflowType,
-                    args,
-                    taskQueue,
-                    ...otherOptions,
-                },
-                memo: description ? { description } : {},
-                searchAttributes: overlapPolicy
-                    ? { overlap: overlapPolicy.toString().toUpperCase() }
-                    : {},
-            });
-        } catch (error) {
-            if (error instanceof Error && error.message.includes('Failed to create schedule')) {
-                throw new Error(
-                    `Failed to create interval schedule '${id}': ${error.message.split(': ')[1]}`,
-                );
-            }
-            throw new Error(
-                `Failed to create interval schedule '${id}': ${error instanceof Error ? error.message : 'Unknown error'}`,
-            );
-        }
-    }
-
-    /**
-     * Resume a paused schedule
-     */
-    async resumeSchedule(scheduleId: string, note?: string): Promise<void> {
-        this.ensureInitialized();
-
-        try {
-            const scheduleHandle = await this.getSchedule(scheduleId);
-            if (!scheduleHandle) {
-                throw new Error(`Schedule ${scheduleId} not found`);
-            }
-
-            await scheduleHandle.update((schedule) => {
-                return {
-                    ...schedule,
-                    state: {
-                        ...schedule.state,
-                        paused: false,
-                    },
-                } as any;
-            });
-
-            this.temporalLogger.info(`Schedule resumed: ${scheduleId}${note ? ` - ${note}` : ''}`);
-        } catch (error) {
-            this.logger.error(
-                `Failed to resume schedule ${scheduleId}: ${error instanceof Error ? error.message : 'Unknown error'}`,
-            );
-            throw error;
-        }
-    }
-
-    /**
-     * List all schedules
-     */
-    async listSchedules(maxItems: number = 100): Promise<Array<{ id: string; state: unknown }>> {
-        this.ensureInitialized();
-
-        try {
-            const schedules = await this.scheduleClient!.list({ pageSize: maxItems });
-            const result: Array<{ id: string; state: unknown }> = [];
-            let count = 0;
-
-            for await (const schedule of schedules) {
-                if (count >= maxItems) break;
-                result.push({
-                    id: (schedule as any).id || 'unknown',
-                    state: (schedule as any).state || {},
-                });
-                count++;
-            }
-
-            return result;
-        } catch (error) {
-            this.logger.error(
-                `Failed to list schedules: ${error instanceof Error ? error.message : 'Unknown error'}`,
-            );
-            throw new Error(
-                `Failed to list schedules: ${error instanceof Error ? error.message : 'Unknown error'}`,
-            );
-        }
-    }
-
-    /**
-     * Check if a schedule exists
-     */
-    async scheduleExists(scheduleId: string): Promise<boolean> {
-        this.ensureInitialized();
-
-        try {
-            const schedules = await this.scheduleClient!.list({ pageSize: 1000 });
-            let count = 0;
-
-            for await (const schedule of schedules) {
-                if (count >= 1000) break;
-                if ((schedule as any).id === scheduleId) {
-                    return true;
-                }
-                count++;
-            }
-
-            return false;
-        } catch (error) {
-            this.logger.warn(`Failed to check schedule existence for '${scheduleId}': ${error}`);
-            return false;
-        }
-    }
-
-    /**
-     * Get the schedule client
-     */
-    getScheduleClient(): ScheduleClient | undefined {
-        return this.scheduleClient;
-    }
-
-    /**
-     * Generate a scheduled workflow ID
-     */
-    private generateScheduledWorkflowId(scheduleId: string): string {
-        return `${scheduleId}-${Date.now()}`;
-    }
-
-    /**
-     * Execute a schedule operation
-     */
-    private async executeScheduleOperation(
-        scheduleId: string,
-        operation: string,
-        action: () => Promise<unknown>,
-    ): Promise<unknown> {
-        try {
-            return await action();
-        } catch (error) {
-            this.logger.error(
-                `Failed to execute ${operation} on schedule '${scheduleId}': ${error instanceof Error ? error.message : 'Unknown error'}`,
-            );
-            throw error;
-        }
-    }
-
-    /**
-     * Ensure client is initialized
-     */
-    private ensureClientInitialized(): void {
-        if (!this.scheduleClient) {
-            throw new Error('Schedule client not initialized');
         }
     }
 }

@@ -1,10 +1,6 @@
 import { TEMPORAL_ACTIVITY, TEMPORAL_ACTIVITY_METHOD } from '../constants';
 import { ActivityMethodOptions, ActivityOptions } from '../interfaces';
 
-// ==========================================
-// Activity Metadata Utilities
-// ==========================================
-
 /**
  * Checks if a class is marked as a Temporal Activity.
  *

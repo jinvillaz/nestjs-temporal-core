@@ -18,9 +18,6 @@ export { TemporalClientService } from './services/temporal-client.service';
 /** Service for worker lifecycle management */
 export { TemporalWorkerManagerService } from './services/temporal-worker.service';
 
-/** Service for activity operations */
-export { TemporalActivityService } from './services/temporal-activity.service';
-
 /** Service for workflow discovery and introspection */
 export { TemporalDiscoveryService } from './services/temporal-discovery.service';
 
