@@ -24,11 +24,6 @@ describe('Main Index Module', () => {
             expect(typeof TemporalCore.TemporalWorkerManagerService).toBe('function');
         });
 
-        it('should export TemporalActivityService', () => {
-            expect(TemporalCore.TemporalActivityService).toBeDefined();
-            expect(typeof TemporalCore.TemporalActivityService).toBe('function');
-        });
-
         it('should export TemporalDiscoveryService', () => {
             expect(TemporalCore.TemporalDiscoveryService).toBeDefined();
             expect(typeof TemporalCore.TemporalDiscoveryService).toBe('function');
@@ -127,12 +122,11 @@ describe('Main Index Module', () => {
                 temporal: TemporalCore.TemporalService,
                 client: TemporalCore.TemporalClientService,
                 worker: TemporalCore.TemporalWorkerManagerService,
-                activity: TemporalCore.TemporalActivityService,
                 discovery: TemporalCore.TemporalDiscoveryService,
                 metadata: TemporalCore.TemporalMetadataAccessor,
             };
 
-            expect(Object.keys(services)).toHaveLength(6);
+            expect(Object.keys(services)).toHaveLength(5);
             Object.values(services).forEach((service) => {
                 expect(service).toBeDefined();
                 expect(typeof service).toBe('function');
@@ -156,7 +150,6 @@ describe('Main Index Module', () => {
                 'TemporalService',
                 'TemporalClientService',
                 'TemporalWorkerManagerService',
-                'TemporalActivityService',
                 'TemporalDiscoveryService',
                 'TemporalMetadataAccessor',
                 'DEFAULT_NAMESPACE',

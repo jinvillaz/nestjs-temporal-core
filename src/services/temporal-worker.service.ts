@@ -4,13 +4,21 @@ import {
     OnModuleDestroy,
     OnApplicationBootstrap,
     Inject,
-    Type,
 } from '@nestjs/common';
-import { DiscoveryService } from '@nestjs/core';
 import { Worker, NativeConnection } from '@temporalio/worker';
 import { TEMPORAL_MODULE_OPTIONS, TEMPORAL_CONNECTION } from '../constants';
-import { TemporalOptions, WorkerStatus } from '../interfaces';
-import { TemporalMetadataAccessor } from './temporal-metadata.service';
+import {
+    TemporalOptions,
+    WorkerStatus,
+    WorkerConfig,
+    WorkerInitResult,
+    WorkerRestartResult,
+    WorkerHealthStatus,
+    WorkerStats,
+    ActivityRegistrationResult,
+    WorkerDiscoveryResult,
+} from '../interfaces';
+import { TemporalDiscoveryService } from './temporal-discovery.service';
 import { createLogger, TemporalLogger } from '../utils/logger';
 
 /**
@@ -39,8 +47,7 @@ export class TemporalWorkerManagerService
     private shutdownPromise: Promise<void> | null = null;
 
     constructor(
-        private readonly discoveryService: DiscoveryService,
-        private readonly metadataAccessor: TemporalMetadataAccessor,
+        private readonly discoveryService: TemporalDiscoveryService,
         @Inject(TEMPORAL_MODULE_OPTIONS)
         private readonly options: TemporalOptions,
         @Inject(TEMPORAL_CONNECTION)
@@ -63,10 +70,16 @@ export class TemporalWorkerManagerService
                 return;
             }
 
-            await this.initializeWorker();
-            this.isInitialized = true;
+            const initResult = await this.initializeWorker();
+            this.isInitialized = initResult.success;
 
-            this.logger.info('Temporal worker manager initialized successfully');
+            if (initResult.success) {
+                this.logger.info('Temporal worker manager initialized successfully');
+            } else {
+                this.lastError = initResult.error?.message || 'Unknown initialization error';
+                this.logger.error('Failed to initialize worker manager', initResult.error);
+                throw initResult.error || new Error('Worker initialization failed');
+            }
         } catch (error) {
             this.lastError = this.extractErrorMessage(error);
             this.logger.error('Failed to initialize worker manager', error);
@@ -104,8 +117,8 @@ export class TemporalWorkerManagerService
             this.lastError = null;
             this.restartCount = 0; // Reset restart count on successful start
 
-            // Start the worker and handle auto-restart on failure
-            this.runWorkerWithAutoRestart();
+            // Start the worker and wait for it to be ready
+            await this.runWorkerWithAutoRestart();
 
             this.logger.info('Temporal worker started successfully');
         } catch (error) {
@@ -116,33 +129,54 @@ export class TemporalWorkerManagerService
         }
     }
 
-    private runWorkerWithAutoRestart(): void {
+    private async runWorkerWithAutoRestart(): Promise<void> {
         if (!this.worker) return;
 
-        this.worker.run().catch(async (error) => {
-            this.lastError = this.extractErrorMessage(error);
-            this.logger.error('Worker run failed', error);
-            this.isRunning = false;
-
-            // Auto-restart if enabled and within restart limits
-            if (this.options.autoRestart !== false && this.restartCount < this.maxRestarts) {
-                this.restartCount++;
-                this.logger.info(
-                    `Auto-restart enabled, attempting to restart worker (attempt ${this.restartCount}/${this.maxRestarts}) in 1 second...`,
-                );
-                setTimeout(async () => {
+        // Start the worker and wait for it to be ready
+        try {
+            // Use setImmediate to ensure non-blocking execution
+            await new Promise<void>((resolve, reject) => {
+                setImmediate(async () => {
                     try {
-                        await this.autoRestartWorker();
-                    } catch (restartError) {
-                        this.logger.error('Auto-restart failed', restartError);
+                        // Start the worker in the background
+                        this.worker!.run().catch((error) => {
+                            this.lastError = this.extractErrorMessage(error);
+                            this.logger.error('Worker run failed', error);
+                            this.isRunning = false;
+
+                            // Auto-restart if enabled and within restart limits
+                            if (
+                                this.options.autoRestart !== false &&
+                                this.restartCount < this.maxRestarts
+                            ) {
+                                this.restartCount++;
+                                this.logger.info(
+                                    `Auto-restart enabled, attempting to restart worker (attempt ${this.restartCount}/${this.maxRestarts}) in 1 second...`,
+                                );
+                                setTimeout(async () => {
+                                    try {
+                                        await this.autoRestartWorker();
+                                    } catch (restartError) {
+                                        this.logger.error('Auto-restart failed', restartError);
+                                    }
+                                }, 1000);
+                            } else if (this.restartCount >= this.maxRestarts) {
+                                this.logger.error(
+                                    `Max restart attempts (${this.maxRestarts}) exceeded. Stopping auto-restart.`,
+                                );
+                            }
+                        });
+
+                        // Give the worker a moment to start up and be ready
+                        setTimeout(() => resolve(), 500);
+                    } catch (error) {
+                        reject(error);
                     }
-                }, 1000);
-            } else if (this.restartCount >= this.maxRestarts) {
-                this.logger.error(
-                    `Max restart attempts (${this.maxRestarts}) exceeded. Stopping auto-restart.`,
-                );
-            }
-        });
+                });
+            });
+        } catch (error) {
+            throw error;
+        }
     }
 
     /**
@@ -208,7 +242,7 @@ export class TemporalWorkerManagerService
     /**
      * Restart the worker
      */
-    async restartWorker(): Promise<void> {
+    async restartWorker(): Promise<WorkerRestartResult> {
         this.logger.info('Restarting Temporal worker...');
 
         try {
@@ -218,10 +252,21 @@ export class TemporalWorkerManagerService
             await new Promise((resolve) => setTimeout(resolve, 1000));
 
             await this.startWorker();
+
+            return {
+                success: true,
+                restartCount: this.restartCount,
+                maxRestarts: this.maxRestarts,
+            };
         } catch (error) {
             this.lastError = this.extractErrorMessage(error);
             this.logger.error('Failed to restart worker', error);
-            throw error;
+            return {
+                success: false,
+                error: error instanceof Error ? error : new Error(this.lastError),
+                restartCount: this.restartCount,
+                maxRestarts: this.maxRestarts,
+            };
         }
     }
 
@@ -257,47 +302,59 @@ export class TemporalWorkerManagerService
     }
 
     /**
-     * Get registered activities as an array-like object (for testing compatibility)
-     * This maintains backward compatibility with existing tests
+     * Register activities from discovery service
      */
-    getRegisteredActivitiesForTesting(): string[] {
-        return Array.from(this.activities.keys());
-    }
+    async registerActivitiesFromDiscovery(): Promise<ActivityRegistrationResult> {
+        const errors: Array<{ activityName: string; error: string }> = [];
+        let registeredCount = 0;
 
-    /**
-     * Get registered activity names as an array (for testing compatibility)
-     */
-    getRegisteredActivityNames(): string[] {
-        return Array.from(this.activities.keys());
-    }
+        try {
+            // Wait for discovery service to complete discovery
+            let attempts = 0;
+            const maxAttempts = 30; // 3 seconds max wait
 
-    /**
-     * Check worker health
-     */
-    async healthCheck() {
-        const status = this.getWorkerStatus();
-        const activities = this.getRegisteredActivities();
+            while (attempts < maxAttempts) {
+                const healthStatus = this.discoveryService.getHealthStatus();
+                if (healthStatus.isComplete) {
+                    break;
+                }
+                await new Promise((resolve) => setTimeout(resolve, 100));
+                attempts++;
+            }
 
-        let healthStatus: 'healthy' | 'unhealthy' | 'degraded';
+            // Load all discovered activities
+            const allActivities = this.discoveryService.getAllActivities();
 
-        if (!status.isInitialized) {
-            healthStatus = 'unhealthy';
-        } else if (status.lastError) {
-            healthStatus = 'degraded';
-        } else if (status.isHealthy) {
-            healthStatus = 'healthy';
-        } else {
-            healthStatus = 'degraded';
+            for (const [activityName, handler] of Object.entries(allActivities)) {
+                try {
+                    this.activities.set(activityName, handler);
+                    registeredCount++;
+                    this.logger.debug(`Registered activity: ${activityName}`);
+                } catch (error) {
+                    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+                    errors.push({ activityName, error: errorMessage });
+                    this.logger.warn(
+                        `Failed to register activity ${activityName}: ${errorMessage}`,
+                    );
+                }
+            }
+
+            this.logger.info(`Registered ${registeredCount} activities from discovery service`);
+
+            return {
+                success: errors.length === 0,
+                registeredCount,
+                errors,
+            };
+        } catch (error) {
+            const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+            this.logger.error('Failed to register activities from discovery', error);
+            return {
+                success: false,
+                registeredCount,
+                errors: [{ activityName: 'discovery', error: errorMessage }],
+            };
         }
-
-        return {
-            status: healthStatus,
-            details: status,
-            activities: {
-                total: Object.keys(activities).length,
-                registered: activities,
-            },
-        };
     }
 
     /**
@@ -308,21 +365,7 @@ export class TemporalWorkerManagerService
     }
 
     /**
-     * Check if worker is initialized
-     */
-    isWorkerInitialized(): boolean {
-        return this.isInitialized;
-    }
-
-    /**
      * Check if worker is running
-     */
-    getIsRunning(): boolean {
-        return this.isRunning;
-    }
-
-    /**
-     * Check if worker is running (alias)
      */
     isWorkerRunning(): boolean {
         return this.isRunning;
@@ -336,17 +379,42 @@ export class TemporalWorkerManagerService
     }
 
     /**
-     * Get the worker instance
+     * Get worker health status
      */
-    getWorker(): Worker | null {
-        return this.worker;
+    getHealthStatus(): WorkerHealthStatus {
+        const uptime = this.startedAt ? Date.now() - this.startedAt.getTime() : undefined;
+
+        return {
+            isHealthy: this.isInitialized && !this.lastError && this.isRunning,
+            isRunning: this.isRunning,
+            isInitialized: this.isInitialized,
+            lastError: this.lastError || undefined,
+            uptime,
+            activitiesCount: this.activities.size,
+            restartCount: this.restartCount,
+            maxRestarts: this.maxRestarts,
+        };
     }
 
     /**
-     * Get the connection instance
+     * Get worker statistics
      */
-    getConnection(): NativeConnection | null {
-        return this.connection || this.injectedConnection;
+    getStats(): WorkerStats {
+        const uptime = this.startedAt ? Date.now() - this.startedAt.getTime() : undefined;
+
+        return {
+            isInitialized: this.isInitialized,
+            isRunning: this.isRunning,
+            activitiesCount: this.activities.size,
+            restartCount: this.restartCount,
+            maxRestarts: this.maxRestarts,
+            uptime,
+            startedAt: this.startedAt || undefined,
+            lastError: this.lastError || undefined,
+            taskQueue: this.options.taskQueue || 'default',
+            namespace: this.options.connection?.namespace || 'default',
+            workflowSource: this.getWorkflowSource(),
+        };
     }
 
     /**
@@ -420,7 +488,7 @@ export class TemporalWorkerManagerService
 
         try {
             const address = this.options.connection.address;
-            const connectOptions: any = {
+            const connectOptions: Record<string, unknown> = {
                 address,
                 tls: this.options.connection.tls,
             };
@@ -437,6 +505,16 @@ export class TemporalWorkerManagerService
             this.logger.info(`Connection established to ${address}`);
         } catch (error) {
             this.logger.error('Failed to create connection', error);
+
+            // In development or when connection failures are allowed, don't throw
+            if (this.options.allowConnectionFailure !== false) {
+                this.logger.warn(
+                    'Worker connection failed - continuing without worker functionality',
+                );
+                this.connection = null;
+                return;
+            }
+
             throw error;
         }
     }
@@ -499,95 +577,137 @@ export class TemporalWorkerManagerService
         );
     }
 
-    private async initializeWorker(): Promise<void> {
+    private async initializeWorker(): Promise<WorkerInitResult> {
         if (!this.options.worker) {
-            throw new Error('Worker configuration is required');
+            return {
+                success: false,
+                error: new Error('Worker configuration is required'),
+                activitiesCount: 0,
+                taskQueue: this.options.taskQueue || 'default',
+                namespace: this.options.connection?.namespace || 'default',
+            };
         }
 
-        // Validate configuration first
-        this.validateConfiguration();
+        try {
+            // Validate configuration first
+            this.validateConfiguration();
 
-        // Ensure connection is established
-        await this.createConnection();
+            // Ensure connection is established
+            await this.createConnection();
 
-        // Discover and register activities
-        await this.discoverActivities();
-
-        // Create worker configuration
-        const workerConfig = await this.createWorkerConfig();
-
-        // Create the worker
-        const { Worker } = await import('@temporalio/worker');
-        this.worker = await Worker.create(workerConfig as never);
-
-        this.logger.debug(
-            `Worker created - TaskQueue: ${workerConfig.taskQueue}, Activities: ${this.activities.size}, Source: ${this.getWorkflowSource()}`,
-        );
-    }
-
-    private async discoverActivities(): Promise<void> {
-        const providers = this.discoveryService.getProviders();
-        const activityClasses = this.options.worker?.activityClasses || [];
-
-        this.logger.debug(`Discovering activities from ${providers.length} providers`);
-
-        for (const wrapper of providers) {
-            const { instance, metatype } = wrapper as { instance?: unknown; metatype?: Function };
-
-            if (!instance || !metatype) continue;
-
-            // Check if this class should be included
-            if (
-                activityClasses.length > 0 &&
-                !activityClasses.includes(metatype as Type<unknown>)
-            ) {
-                continue;
+            // If connection failed and we're allowing connection failures, return gracefully
+            if (!this.connection && this.options.allowConnectionFailure !== false) {
+                this.logger.info('Worker initialization skipped due to connection failure');
+                return {
+                    success: false,
+                    error: new Error('No worker connection available'),
+                    activitiesCount: 0,
+                    taskQueue: this.options.taskQueue || 'default',
+                    namespace: this.options.connection?.namespace || 'default',
+                };
             }
 
-            // Check if it's an activity class
-            if (!this.metadataAccessor.isActivity(metatype)) {
-                continue;
-            }
+            // Get activities from discovery service
+            await this.loadActivitiesFromDiscovery();
 
-            try {
-                const className = metatype.name;
-                this.logger.debug(`Processing activity class: ${className}`);
+            // Create worker configuration
+            const workerConfig = await this.createWorkerConfig();
 
-                const validation = this.metadataAccessor.validateActivityClass(metatype);
-                if (!validation.isValid) {
-                    this.logger.warn(
-                        `Activity class ${className} has validation issues: ${validation.issues.join(', ')}`,
-                    );
-                    continue;
-                }
+            // Create the worker
+            const { Worker } = await import('@temporalio/worker');
+            this.worker = await Worker.create(workerConfig as never);
 
-                const activityMethods = this.metadataAccessor.extractActivityMethods(instance);
+            this.logger.debug(
+                `Worker created - TaskQueue: ${workerConfig.taskQueue}, Activities: ${this.activities.size}, Source: ${this.getWorkflowSource()}`,
+            );
 
-                for (const [activityName, method] of activityMethods.entries()) {
-                    // Handle both object format (with handler property) and direct function format
-                    const handler = typeof method === 'function' ? method : method.handler;
-                    if (typeof handler === 'function') {
-                        this.activities.set(activityName, handler);
-                        this.logger.debug(`Registered activity: ${className}.${activityName}`);
-                    } else {
-                        this.logger.warn(
-                            `Invalid activity method for ${activityName}: not a function`,
-                        );
-                    }
-                }
-            } catch (error) {
-                this.logger.error(`Failed to process activity class ${metatype.name}`, error);
-            }
+            return {
+                success: true,
+                worker: this.worker,
+                activitiesCount: this.activities.size,
+                taskQueue: workerConfig.taskQueue,
+                namespace: workerConfig.namespace,
+            };
+        } catch (error) {
+            this.lastError = this.extractErrorMessage(error);
+            this.logger.error('Failed to initialize worker', error);
+            return {
+                success: false,
+                error: error instanceof Error ? error : new Error(this.lastError),
+                activitiesCount: this.activities.size,
+                taskQueue: this.options.taskQueue || 'default',
+                namespace: this.options.connection?.namespace || 'default',
+            };
         }
-
-        this.logger.info(`Discovered ${this.activities.size} activity methods`);
     }
 
-    private async createWorkerConfig() {
+    private async loadActivitiesFromDiscovery(): Promise<WorkerDiscoveryResult> {
+        const startTime = Date.now();
+        const errors: Array<{ component: string; error: string }> = [];
+        let discoveredActivities = 0;
+        let loadedActivities = 0;
+
+        try {
+            // Wait for discovery service to complete discovery
+            let attempts = 0;
+            const maxAttempts = 30; // 3 seconds max wait
+
+            while (attempts < maxAttempts) {
+                const healthStatus = this.discoveryService.getHealthStatus();
+                if (healthStatus.isComplete) {
+                    break;
+                }
+                await new Promise((resolve) => setTimeout(resolve, 100));
+                attempts++;
+            }
+
+            // Load all discovered activities
+            const allActivities = this.discoveryService.getAllActivities();
+            discoveredActivities = Object.keys(allActivities).length;
+
+            for (const [activityName, handler] of Object.entries(allActivities)) {
+                try {
+                    this.activities.set(activityName, handler);
+                    loadedActivities++;
+                    this.logger.debug(`Loaded activity: ${activityName}`);
+                } catch (error) {
+                    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+                    errors.push({ component: activityName, error: errorMessage });
+                    this.logger.warn(`Failed to load activity ${activityName}: ${errorMessage}`);
+                }
+            }
+
+            this.logger.info(`Loaded ${loadedActivities} activities from discovery service`);
+
+            return {
+                success: errors.length === 0,
+                discoveredActivities,
+                loadedActivities,
+                errors,
+                duration: Date.now() - startTime,
+            };
+        } catch (error) {
+            const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+            this.logger.error('Failed to load activities from discovery', error);
+            return {
+                success: false,
+                discoveredActivities,
+                loadedActivities,
+                errors: [{ component: 'discovery', error: errorMessage }],
+                duration: Date.now() - startTime,
+            };
+        }
+    }
+
+    private async createWorkerConfig(): Promise<WorkerConfig> {
         const taskQueue = this.options.taskQueue || 'default';
         const namespace = this.options.connection?.namespace || 'default';
 
-        const config = {
+        if (!this.connection) {
+            throw new Error('Connection not established');
+        }
+
+        const config: WorkerConfig = {
             taskQueue,
             namespace,
             connection: this.connection,
@@ -596,10 +716,10 @@ export class TemporalWorkerManagerService
 
         // Add workflow configuration
         if (this.options.worker?.workflowsPath) {
-            Object.assign(config, { workflowsPath: this.options.worker.workflowsPath });
+            config.workflowsPath = this.options.worker.workflowsPath;
             this.logger.debug(`Using workflows from path: ${this.options.worker.workflowsPath}`);
         } else if (this.options.worker?.workflowBundle) {
-            Object.assign(config, { workflowBundle: this.options.worker.workflowBundle });
+            config.workflowBundle = this.options.worker.workflowBundle;
             this.logger.debug('Using workflow bundle');
         } else {
             this.logger.warn(
@@ -612,7 +732,7 @@ export class TemporalWorkerManagerService
             Object.assign(config, this.options.worker.workerOptions);
         }
 
-        return config;
+        return config as WorkerConfig;
     }
 
     private async shutdownWorker(): Promise<void> {

@@ -1,12 +1,15 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { TemporalConnectionFactory } from '../../src/providers/temporal-connection.factory';
 import { TemporalOptions } from '../../src/interfaces';
-import { Client } from '@temporalio/client';
+import { Client, Connection } from '@temporalio/client';
 import { NativeConnection } from '@temporalio/worker';
 
 // Mock the Temporal SDK modules
 jest.mock('@temporalio/client', () => ({
     Client: jest.fn(),
+    Connection: {
+        lazy: jest.fn(),
+    },
 }));
 
 jest.mock('@temporalio/worker', () => ({
@@ -68,6 +71,10 @@ describe('TemporalConnectionFactory', () => {
         // Mock the Client constructor
         (Client as jest.MockedClass<typeof Client>).mockImplementation(() => mockClient);
 
+        // Mock the Connection.lazy method
+        const mockConnection = { close: jest.fn() };
+        (Connection.lazy as any).mockResolvedValue(mockConnection);
+
         // Mock the NativeConnection.connect method
         (
             NativeConnection.connect as jest.MockedFunction<typeof NativeConnection.connect>
@@ -128,26 +135,21 @@ describe('TemporalConnectionFactory', () => {
             expect(result).toBe(mockClient);
             expect(Client).toHaveBeenCalledWith(
                 expect.objectContaining({
-                    connection: expect.objectContaining({
-                        metadata: expect.objectContaining({
-                            authorization: 'Bearer test-api-key',
-                        }),
+                    namespace: 'test-namespace',
+                    connection: expect.any(Object),
+                }),
+            );
+            // Verify that Connection.lazy was called with the correct metadata
+            expect(Connection.lazy).toHaveBeenCalledWith(
+                expect.objectContaining({
+                    metadata: expect.objectContaining({
+                        authorization: 'Bearer test-api-key',
                     }),
                 }),
             );
         });
 
         it('should handle client creation with undefined metadata', async () => {
-            // Spy on createNewClient to control the Client mock inside it
-            const createNewClientSpy = jest.spyOn(factory as any, 'createNewClient');
-
-            // Mock the Client constructor to capture the options passed to it
-            let capturedClientOptions: any = null;
-            (Client as jest.MockedClass<typeof Client>).mockImplementation((options: any) => {
-                capturedClientOptions = options;
-                return mockClient;
-            });
-
             const optionsWithUndefinedMetadata: TemporalOptions = {
                 connection: {
                     address: 'localhost:7233',
@@ -162,24 +164,22 @@ describe('TemporalConnectionFactory', () => {
             const result = await factory.createClient(optionsWithUndefinedMetadata);
             expect(result).toBe(mockClient);
 
-            // Verify that the metadata was properly handled (should have authorization but no other metadata)
-            expect(capturedClientOptions).toEqual(
+            // Verify that Connection.lazy was called with metadata containing authorization
+            expect(Connection.lazy).toHaveBeenCalledWith(
                 expect.objectContaining({
-                    connection: expect.objectContaining({
-                        metadata: expect.objectContaining({
-                            authorization: 'Bearer test-api-key',
-                        }),
+                    metadata: expect.objectContaining({
+                        authorization: 'Bearer test-api-key',
                     }),
                 }),
             );
 
-            // Verify that metadata only contains the authorization (since original metadata was undefined)
-            expect(Object.keys(capturedClientOptions.connection.metadata)).toHaveLength(1);
-            expect(capturedClientOptions.connection.metadata.authorization).toBe(
-                'Bearer test-api-key',
+            // Verify that Client constructor was called with connection and namespace
+            expect(Client).toHaveBeenCalledWith(
+                expect.objectContaining({
+                    namespace: 'test-namespace',
+                    connection: expect.any(Object),
+                }),
             );
-
-            createNewClientSpy.mockRestore();
         });
 
         it('should retry connection on failure and succeed', async () => {
@@ -234,7 +234,7 @@ describe('TemporalConnectionFactory', () => {
             const createNewClientSpy = jest.spyOn(factory as any, 'createNewClient');
 
             // Mock to simulate reaching the else block
-            createNewClientSpy.mockImplementation((options: TemporalOptions) => {
+            createNewClientSpy.mockImplementation((options: any) => {
                 // Simulate the logic that leads to the else block
                 const attempts = 3; // MAX_RETRY_ATTEMPTS
                 if (attempts >= 3) {
@@ -365,20 +365,18 @@ describe('TemporalConnectionFactory', () => {
                 allowConnectionFailure: false,
             };
 
-            let capturedClientOptions: any = null;
-            (Client as jest.MockedClass<typeof Client>).mockImplementation((options: any) => {
-                capturedClientOptions = options;
-                return mockClient;
-            });
-
             const result = await factory.createClient(optionsWithExistingMetadata);
             expect(result).toBe(mockClient);
 
-            // Verify that both custom metadata and authorization are present
-            expect(capturedClientOptions.connection.metadata).toEqual({
-                'custom-header': 'value',
-                authorization: 'Bearer test-api-key',
-            });
+            // Verify that Connection.lazy was called with both custom metadata and authorization
+            expect(Connection.lazy).toHaveBeenCalledWith(
+                expect.objectContaining({
+                    metadata: expect.objectContaining({
+                        'custom-header': 'value',
+                        authorization: 'Bearer test-api-key',
+                    }),
+                }),
+            );
         });
     });
 
@@ -635,11 +633,19 @@ describe('TemporalConnectionFactory', () => {
             const result = await factory.createClient(options);
 
             expect(result).toBe(mockClient);
+
+            // Verify that Connection.lazy was called with the correct metadata
+            expect(Connection.lazy).toHaveBeenCalledWith(
+                expect.objectContaining({
+                    metadata: { authorization: 'Bearer test-key' },
+                }),
+            );
+
+            // Verify that Client constructor was called with connection and namespace
             expect(Client).toHaveBeenCalledWith(
                 expect.objectContaining({
-                    connection: expect.objectContaining({
-                        metadata: { authorization: 'Bearer test-key' },
-                    }),
+                    namespace: 'default',
+                    connection: expect.any(Object),
                 }),
             );
         });

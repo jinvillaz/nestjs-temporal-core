@@ -259,8 +259,6 @@ export function createLogger(context: string, config?: LoggerConfig): TemporalLo
     return TemporalLoggerManager.getInstance().createLogger(context, config);
 }
 
-// Decorator removed to avoid compilation issues in test environment
-
 /**
  * Utility functions for commonly used logging patterns
  */

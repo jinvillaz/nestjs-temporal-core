@@ -7,128 +7,146 @@
 ### 🎯 What We're Building
 
 This framework provides:
-- **Seamless Integration**: Native NestJS decorators and services for Temporal workflows
+- **Modular Architecture**: Separate modules for client, worker, activities, and schedules
 - **Enterprise-Ready**: Production-grade error handling, monitoring, and health checks
 - **Developer Experience**: Type-safe decorators, automatic discovery, and comprehensive logging
-- **Scalable Architecture**: Modular design supporting complex distributed systems
+- **Scalable Integration**: Flexible registration patterns for different deployment scenarios
 - **Zero Configuration**: Smart defaults with extensive customization options
 
-### 🏗️ Core Architecture Components
+### 🏗️ Current Architecture (Post-3.0 Refactor)
 
-#### **Framework Layers:**
+#### **Modular Module System:**
 
-1. **Decorator Layer** (`src/decorators/`)
-   - `@Activity()` - Mark classes/methods as Temporal activities
-   - `@Workflow()` - Define Temporal workflows with NestJS integration
-   - `@Signal()` - Handle workflow signals
-   - `@Query()` - Implement workflow queries
-   - `@Schedule()` - Configure scheduled workflows
-   - `@ChildWorkflow()` - Manage child workflow relationships
+1. **Core Modules** (`src/`)
+   - `TemporalModule` - Main unified module with client + worker integration
+   - `TemporalClientModule` - Client-only operations (workflow execution, queries)
+   - `TemporalWorkerModule` - Worker-only operations (activity/workflow registration)
+   - `TemporalActivityModule` - Standalone activity management
+   - `TemporalSchedulesModule` - Standalone schedule management
 
 2. **Service Layer** (`src/services/`)
    - `TemporalService` - Unified facade for all Temporal operations
    - `TemporalClientService` - Workflow execution and management
-   - `TemporalWorkerService` - Worker lifecycle and activity registration
-   - `TemporalActivityService` - Activity discovery and execution
+   - `TemporalWorkerManagerService` - Worker lifecycle and activity registration  
    - `TemporalScheduleService` - Schedule management (cron, interval, calendar)
    - `TemporalDiscoveryService` - Automatic component discovery
-   - `TemporalMetadataService` - Metadata extraction and validation
+   - `TemporalMetadataAccessor` - Metadata extraction and validation
 
-3. **Module Layer** (`src/`)
-   - `TemporalModule` - Main module for application integration
-   - Configuration interfaces and type definitions
-   - Health monitoring and status reporting
+3. **Decorator Layer** (`src/decorators/`)
+   - `@Activity()` - Mark classes as Temporal activities
+   - `@ActivityMethod()` - Mark methods for activity discovery
+   - Workflow decorators (deprecated - use pure Temporal workflow functions)
 
-4. **Utility Layer** (`src/utils/`)
-   - Logger utilities with structured logging
-   - Validation helpers and type guards
-   - Connection factories and management
+4. **Provider Layer** (`src/providers/`)
+   - `TemporalConnectionFactory` - Connection management and pooling
+   - Configuration providers and constants
 
-### 🔧 Key Features & Capabilities
+### 🔧 Key Integration Patterns
 
-#### **Decorator-Based Development**
+#### **Module Registration Patterns**
 ```typescript
-@Injectable()
-@Activity('processPayment')
-export class PaymentActivity {
-  async execute(amount: number, currency: string): Promise<PaymentResult> {
-    // Activity implementation
+// 1. Unified Module (Client + Worker)
+TemporalModule.register({
+  connection: { address: 'localhost:7233' },
+  taskQueue: 'my-queue',
+  worker: { 
+    workflowsPath: './dist/workflows',
+    activityClasses: [PaymentActivity] 
   }
-}
-
-@Injectable()
-@Workflow('paymentWorkflow')
-export class PaymentWorkflow {
-  @Signal('cancelPayment')
-  async cancelPayment(): Promise<void> {
-    // Signal handler
-  }
-
-  @Query('getPaymentStatus')
-  getStatus(): PaymentStatus {
-    // Query handler
-  }
-}
-```
-
-#### **Automatic Service Discovery**
-- Runtime discovery of decorated classes and methods
-- Automatic registration with Temporal workers
-- Type-safe metadata extraction and validation
-- Component health monitoring and status reporting
-
-#### **Advanced Scheduling**
-```typescript
-@Schedule({
-  cronExpressions: ['0 0 * * MON'],
-  timeZone: 'UTC',
-  overlap: ScheduleOverlapPolicy.SKIP
 })
-export class WeeklyReportWorkflow {
-  // Scheduled workflow implementation
+
+// 2. Client-Only Module
+TemporalClientModule.register({
+  connection: { address: 'localhost:7233' }
+})
+
+// 3. Worker-Only Module  
+TemporalWorkerModule.register({
+  connection: { address: 'localhost:7233' },
+  taskQueue: 'worker-queue',
+  worker: { workflowsPath: './dist/workflows' }
+})
+
+// 4. Async Configuration
+TemporalModule.registerAsync({
+  imports: [ConfigModule],
+  useFactory: (config: ConfigService) => ({
+    connection: { address: config.get('TEMPORAL_ADDRESS') },
+    taskQueue: config.get('TEMPORAL_TASK_QUEUE')
+  }),
+  inject: [ConfigService]
+})
+```
+
+#### **Activity Development**
+```typescript
+@Injectable()
+@Activity({ name: 'payment-activities' })
+export class PaymentActivity {
+  @ActivityMethod('processPayment')
+  async processPayment(amount: number): Promise<PaymentResult> {
+    // Activity implementation with full NestJS DI support
+  }
 }
 ```
 
-#### **Comprehensive Error Handling**
-- Structured error propagation
-- Activity and workflow failure recovery
-- Dead letter queue management
-- Detailed error logging and monitoring
+#### **Service Integration**
+```typescript
+@Injectable()
+export class OrderService {
+  constructor(private temporal: TemporalService) {}
 
-#### **Enterprise Features**
-- Health checks and metrics
-- Connection pooling and management
-- Multi-environment configuration
-- Graceful shutdown handling
-- Performance monitoring
+  async processOrder(orderId: string) {
+    // Start workflow
+    const { workflowId } = await this.temporal.startWorkflow(
+      'processOrder', [orderId], { workflowId: `order-${orderId}` }
+    );
+    
+    // Query status
+    const status = await this.temporal.queryWorkflow(workflowId, 'getStatus');
+    
+    // Send signal  
+    await this.temporal.signalWorkflow(workflowId, 'cancel', ['user-request']);
+  }
+}
+```
 
 ### 🏛️ Project Structure
 
 ```
 src/
-├── decorators/           # Framework decorators
-│   ├── activity.decorator.ts
-│   ├── workflow.decorator.ts
-│   ├── signal.decorator.ts
-│   ├── query.decorator.ts
-│   └── schedule.decorator.ts
-├── services/            # Core services
-│   ├── temporal.service.ts
-│   ├── temporal-client.service.ts
-│   ├── temporal-worker.service.ts
-│   ├── temporal-activity.service.ts
-│   ├── temporal-schedule.service.ts
-│   ├── temporal-discovery.service.ts
-│   └── temporal-metadata.service.ts
-├── health/              # Health monitoring
+├── temporal.module.ts           # Main unified module
+├── interfaces.ts               # Core TypeScript interfaces
+├── constants.ts               # Framework constants
+├── index.ts                   # Public API exports
+├── decorators/               # Activity/workflow decorators
+│   └── activity.decorator.ts
+├── services/                # Core service layer
+│   ├── temporal.service.ts           # Unified facade service
+│   ├── temporal-client.service.ts    # Client operations
+│   ├── temporal-worker.service.ts    # Worker management
+│   ├── temporal-schedule.service.ts  # Schedule management  
+│   ├── temporal-discovery.service.ts # Component discovery
+│   └── temporal-metadata.service.ts  # Metadata extraction
+├── client/                  # Client-only module
+│   └── temporal-client.module.ts
+├── worker/                  # Worker-only module
+│   └── temporal-worker.module.ts
+├── activity/               # Activity-only module
+│   ├── temporal-activity.module.ts
+│   └── temporal-activity.service.ts
+├── schedules/              # Schedule-only module
+│   ├── temporal-schedules.module.ts
+│   └── temporal-schedules.service.ts
+├── health/                 # Health monitoring
 │   ├── temporal-health.controller.ts
 │   └── temporal-health.module.ts
-├── providers/           # Configuration providers
-├── utils/               # Utilities and helpers
-├── types/               # TypeScript definitions
-├── interfaces.ts        # Core interfaces
-├── constants.ts         # Framework constants
-└── temporal.module.ts   # Main module
+├── providers/             # Connection providers
+│   └── temporal-connection.factory.ts
+├── utils/                 # Utilities and helpers
+│   ├── logger.ts         # Logging utilities
+│   └── validation.ts     # Validation helpers
+└── types/                # TypeScript type definitions
 ```
 
 ### 🎯 Development Principles
@@ -248,8 +266,34 @@ The framework employs a multi-layered testing approach:
 - Maintain consistency with established test file structure
 - Verify test changes don't break existing functionality
 
+## 🔍 **Essential Commands & Workflows**
+
+### **Development Commands**
+```bash
+# Testing & Quality
+npm run test              # Run all tests with coverage
+npm run test:unit         # Unit tests only  
+npm run test:ci           # CI pipeline tests
+npm run fix-all           # Format + lint fix
+
+# Build & Release
+npm run build             # Clean build
+npm run release           # Build + publish
+npm run release:dry       # Test release
+
+# Documentation
+npm run docs:generate     # Generate API docs
+npm run docs:serve        # Serve docs locally
+```
+
+### **Testing Patterns**
+- **Coverage Target**: 90% branches/functions/lines/statements
+- **Mock Pattern**: Use `jest.spyOn((service as any).methodName)` for private methods
+- **Error Testing**: Always test error scenarios with logger suppression
+- **Setup**: Standard `beforeEach`/`afterEach` with `jest.restoreAllMocks()`
+
 ---
 
-*Last Updated: September 18, 2025*
+*Last Updated: September 24, 2025*
 *Current Branch: feat/improvements*
 *Project: nestjs-temporal-core by harsh-simform*

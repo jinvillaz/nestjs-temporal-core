@@ -1,13 +1,16 @@
-// Re-exports from external packages
 export { RetryPolicy, Duration, SearchAttributes } from '@temporalio/common';
-export { WorkflowHandle, Client } from '@temporalio/client';
+export {
+    WorkflowHandle,
+    Client,
+    ConnectionOptions as TemporalConnectionOptions,
+} from '@temporalio/client';
 export { Worker } from '@temporalio/worker';
 
 import { Type } from '@nestjs/common';
-
-// ==========================================
-// Core Configuration Interfaces
-// ==========================================
+import { ScheduleClient, ScheduleHandle } from '@temporalio/client';
+import { NativeConnection, Worker } from '@temporalio/worker';
+import { TypedSearchAttributes } from '@temporalio/common';
+import { TLSConfig } from '@temporalio/common/lib/internal-non-workflow';
 
 /**
  * Configuration options for Temporal client connection.
@@ -25,15 +28,15 @@ import { Type } from '@nestjs/common';
  */
 export interface ClientConnectionOptions {
     address: string;
-    tls?: unknown;
+    tls?: boolean | TLSConfig;
     metadata?: Record<string, string>;
     apiKey?: string;
     namespace?: string;
 }
 
 /**
- * Enhanced connection options with TLS support for Temporal server.
- * Supports both simple boolean TLS and advanced certificate configuration.
+ * Connection options with TLS support for Temporal server.
+ * Extends the official Temporal ConnectionOptions with additional convenience properties.
  *
  * @example Simple TLS
  * ```typescript
@@ -58,21 +61,7 @@ export interface ClientConnectionOptions {
  * };
  * ```
  */
-export interface ConnectionOptions {
-    address: string;
-    tls?:
-        | boolean
-        | {
-              serverName?: string;
-              clientCertPair?: {
-                  crt: Buffer;
-                  key: Buffer;
-                  ca?: Buffer;
-              };
-          };
-    apiKey?: string;
-    metadata?: Record<string, string>;
-}
+export type ConnectionOptions = import('@temporalio/client').ConnectionOptions;
 
 /**
  * Configuration for retry policies in Temporal activities and workflows.
@@ -131,15 +120,15 @@ export interface TemporalOptions extends LoggerConfig {
     connection?: {
         address: string;
         namespace?: string;
-        tls?: ConnectionOptions['tls'];
+        tls?: boolean | TLSConfig;
         apiKey?: string;
         metadata?: Record<string, string>;
     };
     taskQueue?: string;
     worker?: {
         workflowsPath?: string;
-        workflowBundle?: unknown;
-        activityClasses?: Array<Type<unknown>>;
+        workflowBundle?: Record<string, unknown>;
+        activityClasses?: Array<Type<object>>;
         autoStart?: boolean;
         workerOptions?: WorkerCreateOptions;
     };
@@ -193,8 +182,8 @@ export interface WorkerModuleOptions {
     };
     taskQueue?: string;
     workflowsPath?: string;
-    workflowBundle?: unknown;
-    activityClasses?: Array<unknown>;
+    workflowBundle?: Record<string, unknown>;
+    activityClasses?: Array<Type<object>>;
     autoStart?: boolean;
     autoRestart?: boolean;
     allowWorkerFailure?: boolean;
@@ -314,8 +303,8 @@ export interface TemporalAsyncOptions {
     useExisting?: Type<TemporalOptionsFactory>;
     useClass?: Type<TemporalOptionsFactory>;
     useFactory?: (...args: unknown[]) => Promise<TemporalOptions> | TemporalOptions;
-    inject?: unknown[];
-    imports?: unknown[];
+    inject?: Array<string | symbol | Type<unknown>>;
+    imports?: Array<Type<unknown>>;
     isGlobal?: boolean;
 }
 
@@ -330,7 +319,7 @@ export interface TemporalAsyncOptions {
 export interface ActivityMethodMetadata {
     name: string;
     originalName: string;
-    options?: Record<string, unknown>;
+    options?: Record<string, string | number | boolean | object>;
     handler: ActivityMethodHandler;
 }
 
@@ -360,7 +349,7 @@ export interface ActivityMethodOptions {
  */
 export interface ActivityMetadata {
     name?: string;
-    options?: Record<string, unknown>;
+    options?: Record<string, string | number | boolean | object>;
 }
 
 /**
@@ -481,7 +470,7 @@ export interface ScheduleStats {
 export interface SignalMethodInfo {
     methodName: string;
     signalName: string;
-    options?: Record<string, unknown>;
+    options?: Record<string, string | number | boolean | object>;
     handler: (...args: unknown[]) => unknown | Promise<unknown>;
 }
 
@@ -598,20 +587,16 @@ export interface QueryMethodMetadata {
  * Metadata for child workflows injected through @ChildWorkflow decorator.
  */
 export interface ChildWorkflowMetadata {
-    workflowType: unknown;
-    options?: Record<string, unknown>;
+    workflowType: string | Type<unknown>;
+    options?: Record<string, string | number | boolean | object>;
     propertyKey: string | symbol;
 }
-
-// ==========================================
-// Handler Types
-// ==========================================
 
 /**
  * Function signature for activity method handlers.
  * Can be synchronous or asynchronous.
  */
-export type ActivityMethodHandler = (...args: unknown[]) => unknown | Promise<unknown>;
+export type ActivityMethodHandler = (...args: unknown[]) => Promise<unknown> | unknown;
 
 /**
  * Function signature for query method handlers.
@@ -647,7 +632,7 @@ export interface ActivityModuleOptions extends LoggerConfig {
  */
 export interface ActivityInfo {
     className: string;
-    instance: object;
+    instance: Record<string, unknown>;
     targetClass: Type<unknown>;
     methods: Array<{
         name: string;
@@ -666,7 +651,7 @@ export interface ExtendedSignalMethodInfo {
     signalName: string;
     methodName: string;
     handler: (...args: unknown[]) => unknown | Promise<unknown>;
-    instance: object;
+    instance: Record<string, unknown>;
 }
 
 /**
@@ -678,8 +663,8 @@ export interface ExtendedQueryMethodInfo {
     queryName: string;
     methodName: string;
     handler: (...args: unknown[]) => unknown | Promise<unknown>;
-    instance: object;
-    options?: Record<string, unknown>;
+    instance: Record<string, unknown>;
+    options?: Record<string, string | number | boolean | object>;
 }
 
 /**
@@ -690,13 +675,9 @@ export interface ChildWorkflowInfo {
     className: string;
     propertyKey: string | symbol;
     workflowType: Type<unknown>;
-    options?: Record<string, unknown>;
-    instance: object;
+    options?: Record<string, string | number | boolean | object>;
+    instance: Record<string, unknown>;
 }
-
-// ==========================================
-// Enhanced Type Definitions for 'any' Replacement
-// ==========================================
 
 /**
  * Generic function type for activity methods
@@ -751,10 +732,10 @@ export interface ScheduleAction {
  */
 export interface ScheduleCreateOptions {
     scheduleId: string;
-    spec: any;
-    action: any;
-    memo?: Record<string, any>;
-    searchAttributes?: Record<string, any>;
+    spec: ScheduleSpec;
+    action: ScheduleAction;
+    memo?: Record<string, string | number | boolean | object>;
+    searchAttributes?: Record<string, string | number | boolean | object>;
     workflowType?: string;
     args?: unknown[];
     taskQueue?: string;
@@ -781,8 +762,8 @@ export interface ScheduleCreateOptions {
 export interface WorkflowStartOptions {
     workflowId?: string;
     taskQueue?: string;
-    searchAttributes?: Record<string, string | number | boolean | Date>;
-    memo?: Record<string, unknown>;
+    searchAttributes?: TypedSearchAttributes;
+    memo?: Record<string, string | number | boolean | object>;
     workflowIdReusePolicy?: 'ALLOW_DUPLICATE' | 'ALLOW_DUPLICATE_FAILED_ONLY' | 'REJECT_DUPLICATE';
     workflowExecutionTimeout?: string;
     workflowRunTimeout?: string;
@@ -799,7 +780,7 @@ export type HealthStatus = 'healthy' | 'unhealthy' | 'degraded';
  */
 export interface ServiceHealth {
     status: HealthStatus;
-    details?: Record<string, unknown>;
+    details?: Record<string, string | number | boolean | object>;
     timestamp?: Date;
 }
 
@@ -844,7 +825,7 @@ export type TemporalOverlapPolicy =
  * Generic metadata type for reflection
  */
 export interface MetadataInfo {
-    [key: string]: unknown;
+    [key: string]: string | number | boolean | object | null;
 }
 
 /**
@@ -856,7 +837,66 @@ export type ActivityWrapper = (...args: unknown[]) => Promise<unknown>;
  * Instance type for NestJS providers
  */
 export interface ProviderInstance {
-    [key: string]: unknown;
+    [key: string]: string | number | boolean | object | null | undefined;
+}
+
+/**
+ * NestJS wrapper interface for discovery service
+ */
+export interface NestJSWrapper {
+    instance?: Record<string, unknown>;
+    metatype?: new (...args: unknown[]) => Record<string, unknown>;
+}
+
+/**
+ * Instance with constructor interface for activity discovery
+ */
+export interface InstanceWithConstructor {
+    constructor: new (...args: unknown[]) => Record<string, unknown>;
+}
+
+/**
+ * Discovered activity information for discovery service
+ */
+export interface DiscoveredActivity {
+    name: string;
+    className: string;
+    method: ActivityMethodInfo | ActivityMethodHandler;
+    instance: Record<string, unknown>;
+    handler: ActivityMethodHandler;
+}
+
+/**
+ * Signal configuration for workflow start options
+ */
+export interface WorkflowSignalConfig {
+    name: string;
+    args?: unknown[];
+}
+
+/**
+ * Workflow handle with additional metadata
+ */
+export type WorkflowHandleWithMetadata = import('@temporalio/client').WorkflowHandle & {
+    handle: import('@temporalio/client').WorkflowHandle;
+};
+
+/**
+ * Client service status information
+ */
+export interface ClientServiceStatus {
+    available: boolean;
+    healthy: boolean;
+    initialized: boolean;
+    lastHealthCheck: Date | null;
+    namespace: string;
+}
+
+/**
+ * Client health status
+ */
+export interface ClientHealthStatus {
+    status: 'healthy' | 'unhealthy' | 'degraded';
 }
 
 /**
@@ -864,8 +904,11 @@ export interface ProviderInstance {
  */
 export interface GenericClient {
     workflow: {
-        start: (type: string, options: Record<string, unknown>) => Promise<unknown>;
-        getHandle: (id: string, runId?: string) => unknown;
+        start: (
+            type: string,
+            options: Record<string, string | number | boolean | object>,
+        ) => Promise<import('@temporalio/client').WorkflowHandle>;
+        getHandle: (id: string, runId?: string) => import('@temporalio/client').WorkflowHandle;
     };
 }
 
@@ -884,5 +927,738 @@ export interface ScheduleDescription {
         paused: boolean;
         note?: string;
         remainingActions?: number;
+    };
+}
+
+// ==========================================
+// Discovery Service Interfaces
+// ==========================================
+
+/**
+ * Discovery service statistics
+ */
+export interface DiscoveryServiceStats {
+    methods: number;
+    activities: number;
+    totalComponents: number;
+}
+
+/**
+ * Discovery service health status
+ */
+export interface DiscoveryHealthStatus {
+    isComplete: boolean;
+    status: 'healthy' | 'degraded' | 'unhealthy';
+    discoveredItems?: {
+        activities: number;
+    };
+    lastDiscovery?: Date | null;
+    discoveryDuration?: number | null;
+    totalComponents?: number;
+}
+
+/**
+ * Discovery service configuration
+ */
+export interface DiscoveryServiceConfig {
+    enableLogging: boolean;
+    logLevel: LogLevel;
+    activityClasses: Array<Type<unknown>>;
+}
+
+/**
+ * Component discovery result
+ */
+export interface ComponentDiscoveryResult {
+    success: boolean;
+    discoveredCount: number;
+    errors: Array<{
+        component: string;
+        error: string;
+    }>;
+    duration: number;
+}
+
+/**
+ * Activity method validation result
+ */
+export interface ActivityMethodValidationResult {
+    isValid: boolean;
+    issues: string[];
+    warnings?: string[];
+}
+
+/**
+ * Discovery service options
+ */
+export interface DiscoveryServiceOptions {
+    enableLogger?: boolean;
+    logLevel?: LogLevel;
+    activityClasses?: Array<Type<unknown>>;
+    validateOnDiscovery?: boolean;
+    cacheResults?: boolean;
+}
+
+/**
+ * Wrapper processing result
+ */
+export interface WrapperProcessingResult {
+    success: boolean;
+    processedCount: number;
+    errors: Array<{
+        component: string;
+        error: string;
+    }>;
+}
+
+/**
+ * Activity discovery context
+ */
+export interface ActivityDiscoveryContext {
+    className: string;
+    instance: Record<string, unknown>;
+    metatype: Type<unknown>;
+    validationResult?: ActivityMethodValidationResult;
+}
+
+// ==========================================
+// Metadata Service Interfaces
+// ==========================================
+
+/**
+ * Activity method metadata result
+ */
+export interface ActivityMethodMetadataResult {
+    name: string;
+    originalName: string;
+    methodName: string;
+    className: string;
+    options?: Record<string, unknown>;
+    handler?: Function;
+}
+
+/**
+ * Activity metadata extraction result
+ */
+export interface ActivityMetadataExtractionResult {
+    success: boolean;
+    methods: Map<string, ActivityMethodMetadataResult>;
+    errors: Array<{
+        method: string;
+        error: string;
+    }>;
+    extractedCount: number;
+}
+
+/**
+ * Activity class validation result
+ */
+export interface ActivityClassValidationResult {
+    isValid: boolean;
+    issues: string[];
+    warnings?: string[];
+    className?: string;
+    methodCount?: number;
+}
+
+/**
+ * Metadata validation result
+ */
+export interface MetadataValidationResult {
+    isValid: boolean;
+    missing: string[];
+    present: string[];
+    target: string;
+}
+
+/**
+ * Activity info result
+ */
+export interface ActivityInfoResult {
+    className: string;
+    isActivity: boolean;
+    activityName: string | null;
+    methodNames: string[];
+    metadata: unknown;
+    activityOptions: unknown;
+    methodCount: number;
+}
+
+/**
+ * Cache statistics result
+ */
+export interface CacheStatsResult {
+    size: number;
+    entries: string[];
+    message?: string;
+    note?: string;
+    hitRate?: number;
+    missRate?: number;
+}
+
+/**
+ * Signal method extraction result
+ */
+export interface SignalMethodExtractionResult {
+    success: boolean;
+    methods: Record<string, string>;
+    errors: Array<{
+        method: string;
+        error: string;
+    }>;
+}
+
+/**
+ * Query method extraction result
+ */
+export interface QueryMethodExtractionResult {
+    success: boolean;
+    methods: Record<string, string>;
+    errors: Array<{
+        method: string;
+        error: string;
+    }>;
+}
+
+/**
+ * Child workflow extraction result
+ */
+export interface ChildWorkflowExtractionResult {
+    success: boolean;
+    workflows: Record<string, unknown>;
+    errors: Array<{
+        workflow: string;
+        error: string;
+    }>;
+}
+
+/**
+ * Metadata extraction options
+ */
+export interface MetadataExtractionOptions {
+    includeOptions?: boolean;
+    validateMethods?: boolean;
+    cacheResults?: boolean;
+    strictMode?: boolean;
+}
+
+/**
+ * Activity method extraction context
+ */
+export interface ActivityMethodExtractionContext {
+    instance: unknown;
+    className: string;
+    methodName: string;
+    prototype: object;
+    metadata: unknown;
+}
+
+// ==========================================
+// Schedule Service Interfaces
+// ==========================================
+
+/**
+ * Schedule creation options
+ */
+export interface ScheduleCreationOptions {
+    scheduleId: string;
+    spec: ScheduleSpec;
+    action: ScheduleAction;
+    memo?: Record<string, unknown>;
+    searchAttributes?: Record<string, unknown>;
+}
+
+/**
+ * Schedule creation result
+ */
+export interface ScheduleCreationResult {
+    success: boolean;
+    scheduleId?: string;
+    handle?: ScheduleHandle;
+    error?: Error;
+}
+
+/**
+ * Schedule retrieval result
+ */
+export interface ScheduleRetrievalResult {
+    success: boolean;
+    handle?: ScheduleHandle;
+    error?: Error;
+}
+
+/**
+ * Schedule service status
+ */
+export interface ScheduleServiceStatus {
+    available: boolean;
+    healthy: boolean;
+    schedulesSupported: boolean;
+    initialized: boolean;
+}
+
+/**
+ * Schedule service health
+ */
+export interface ScheduleServiceHealth {
+    status: 'healthy' | 'unhealthy' | 'degraded';
+    schedulesCount: number;
+    isInitialized: boolean;
+    details: Record<string, unknown>;
+    lastError?: string;
+}
+
+/**
+ * Schedule statistics
+ */
+export interface ScheduleServiceStats {
+    total: number;
+    active: number;
+    inactive: number;
+    errors: number;
+    lastUpdated?: Date;
+}
+
+/**
+ * Schedule discovery result
+ */
+export interface ScheduleDiscoveryResult {
+    success: boolean;
+    discoveredCount: number;
+    errors: Array<{
+        schedule: string;
+        error: string;
+    }>;
+    duration: number;
+}
+
+/**
+ * Schedule registration result
+ */
+export interface ScheduleRegistrationResult {
+    success: boolean;
+    scheduleId: string;
+    handle?: ScheduleHandle;
+    error?: Error;
+}
+
+/**
+ * Schedule metadata validation result
+ */
+export interface ScheduleMetadataValidationResult {
+    isValid: boolean;
+    issues: string[];
+    warnings?: string[];
+    scheduleId?: string;
+}
+
+/**
+ * Schedule client initialization result
+ */
+export interface ScheduleClientInitResult {
+    success: boolean;
+    client?: ScheduleClient;
+    error?: Error;
+    source: 'existing' | 'new' | 'none';
+}
+
+/**
+ * Schedule workflow options
+ */
+export interface ScheduleWorkflowOptions {
+    taskQueue?: string;
+    workflowId?: string;
+    workflowExecutionTimeout?: string;
+    workflowRunTimeout?: string;
+    workflowTaskTimeout?: string;
+    retryPolicy?: Record<string, unknown>;
+    args?: unknown[];
+}
+
+/**
+ * Schedule specification builder result
+ */
+export interface ScheduleSpecBuilderResult {
+    success: boolean;
+    spec?: Record<string, unknown>;
+    error?: Error;
+}
+
+/**
+ * Schedule interval parsing result
+ */
+export interface ScheduleIntervalParseResult {
+    success: boolean;
+    interval?: Record<string, unknown>;
+    error?: Error;
+}
+
+/**
+ * Temporal connection interface for schedule client
+ */
+export interface TemporalConnection {
+    address: string;
+    namespace?: string;
+    tls?: boolean | object;
+    metadata?: Record<string, string>;
+}
+
+/**
+ * Schedule action interface for workflow start
+ */
+export interface ScheduleWorkflowAction {
+    type: 'startWorkflow';
+    workflowType: string;
+    taskQueue: string;
+    args?: unknown[];
+    workflowId?: string;
+    workflowExecutionTimeout?: string;
+    workflowRunTimeout?: string;
+    workflowTaskTimeout?: string;
+    retryPolicy?: Record<string, unknown>;
+}
+
+/**
+ * Schedule options interface
+ */
+export interface ScheduleOptions {
+    scheduleId: string;
+    spec: Record<string, unknown>;
+    action: ScheduleWorkflowAction;
+    memo?: Record<string, unknown>;
+    searchAttributes?: Record<string, unknown>;
+}
+
+/**
+ * Worker connection options interface
+ */
+export interface WorkerConnectionOptions {
+    address: string;
+    tls?: boolean | object;
+    metadata?: Record<string, string>;
+    apiKey?: string;
+    namespace?: string;
+}
+
+/**
+ * Worker configuration interface
+ */
+export interface WorkerConfig {
+    taskQueue: string;
+    namespace: string;
+    connection: NativeConnection;
+    activities: Record<string, Function>;
+    workflowsPath?: string;
+    workflowBundle?: unknown;
+    workerOptions?: Record<string, unknown>;
+    [key: string]: unknown;
+}
+
+/**
+ * Worker initialization result
+ */
+export interface WorkerInitResult {
+    success: boolean;
+    worker?: Worker;
+    error?: Error;
+    activitiesCount: number;
+    taskQueue: string;
+    namespace: string;
+}
+
+/**
+ * Worker restart result
+ */
+export interface WorkerRestartResult {
+    success: boolean;
+    error?: Error;
+    restartCount: number;
+    maxRestarts: number;
+}
+
+/**
+ * Worker shutdown result
+ */
+export interface WorkerShutdownResult {
+    success: boolean;
+    error?: Error;
+    shutdownTime: number;
+}
+
+/**
+ * Worker health status
+ */
+export interface WorkerHealthStatus {
+    isHealthy: boolean;
+    isRunning: boolean;
+    isInitialized: boolean;
+    lastError?: string;
+    uptime?: number;
+    activitiesCount: number;
+    restartCount: number;
+    maxRestarts: number;
+}
+
+/**
+ * Worker statistics
+ */
+export interface WorkerStats {
+    isInitialized: boolean;
+    isRunning: boolean;
+    activitiesCount: number;
+    restartCount: number;
+    maxRestarts: number;
+    uptime?: number;
+    startedAt?: Date;
+    lastError?: string;
+    taskQueue: string;
+    namespace: string;
+    workflowSource: 'bundle' | 'filesystem' | 'registered' | 'none';
+}
+
+/**
+ * Activity registration result
+ */
+export interface ActivityRegistrationResult {
+    success: boolean;
+    registeredCount: number;
+    errors: Array<{ activityName: string; error: string }>;
+}
+
+/**
+ * Worker discovery result
+ */
+export interface WorkerDiscoveryResult {
+    success: boolean;
+    discoveredActivities: number;
+    loadedActivities: number;
+    errors: Array<{ component: string; error: string }>;
+    duration: number;
+}
+
+/**
+ * Temporal service initialization result
+ */
+export interface TemporalServiceInitResult {
+    success: boolean;
+    error?: Error;
+    servicesInitialized: {
+        client: boolean;
+        worker: boolean;
+        schedule: boolean;
+        discovery: boolean;
+        metadata: boolean;
+    };
+    initializationTime: number;
+}
+
+/**
+ * Workflow execution result
+ */
+export interface WorkflowExecutionResult<T = unknown> {
+    success: boolean;
+    result?: T;
+    error?: Error;
+    workflowId?: string;
+    runId?: string;
+    executionTime?: number;
+}
+
+/**
+ * Workflow signal result
+ */
+export interface WorkflowSignalResult {
+    success: boolean;
+    error?: Error;
+    workflowId: string;
+    signalName: string;
+}
+
+/**
+ * Workflow query result
+ */
+export interface WorkflowQueryResult<T = unknown> {
+    success: boolean;
+    result?: T;
+    error?: Error;
+    workflowId: string;
+    queryName: string;
+}
+
+/**
+ * Workflow termination result
+ */
+export interface WorkflowTerminationResult {
+    success: boolean;
+    error?: Error;
+    workflowId: string;
+    reason?: string;
+}
+
+/**
+ * Workflow cancellation result
+ */
+export interface WorkflowCancellationResult {
+    success: boolean;
+    error?: Error;
+    workflowId: string;
+}
+
+/**
+ * Activity execution result (enhanced)
+ */
+export interface ActivityExecutionResult<T = unknown> {
+    success: boolean;
+    result?: T;
+    error?: Error;
+    activityName: string;
+    executionTime?: number;
+    args?: unknown[];
+}
+
+/**
+ * Service health status (enhanced)
+ */
+export interface ServiceHealthStatus {
+    status: 'healthy' | 'unhealthy' | 'degraded';
+    isInitialized: boolean;
+    lastError?: string;
+    uptime?: number;
+    details?: Record<string, unknown>;
+}
+
+/**
+ * Component health status
+ */
+export interface ComponentHealthStatus {
+    client: ServiceHealthStatus;
+    worker: ServiceHealthStatus;
+    schedule: ServiceHealthStatus;
+    activity: ServiceHealthStatus;
+    discovery: ServiceHealthStatus;
+}
+
+/**
+ * Overall health status
+ */
+export interface OverallHealthStatus {
+    status: 'healthy' | 'unhealthy' | 'degraded';
+    components: ComponentHealthStatus;
+    isInitialized: boolean;
+    namespace: string;
+    summary: {
+        totalActivities: number;
+        totalSchedules: number;
+        workerRunning: boolean;
+        clientConnected: boolean;
+    };
+    timestamp: Date;
+}
+
+/**
+ * Service statistics (enhanced)
+ */
+export interface ServiceStatistics {
+    activities: {
+        classes: number;
+        methods: number;
+        total: number;
+        registered: number;
+        available: number;
+    };
+    schedules: {
+        total: number;
+        active: number;
+        paused: number;
+    };
+    worker: {
+        isRunning: boolean;
+        isHealthy: boolean;
+        activitiesCount: number;
+        uptime?: number;
+    };
+    client: {
+        isConnected: boolean;
+        isHealthy: boolean;
+        namespace: string;
+    };
+    discovery: {
+        isComplete: boolean;
+        discoveredCount: number;
+        errors: number;
+    };
+}
+
+/**
+ * Service initialization options
+ */
+export interface ServiceInitOptions {
+    waitForServices?: boolean;
+    maxWaitTime?: number;
+    retryAttempts?: number;
+    retryDelay?: number;
+}
+
+/**
+ * Service shutdown options
+ */
+export interface ServiceShutdownOptions {
+    graceful?: boolean;
+    timeout?: number;
+    stopWorker?: boolean;
+}
+
+/**
+ * Service shutdown result
+ */
+export interface ServiceShutdownResult {
+    success: boolean;
+    error?: Error;
+    shutdownTime: number;
+    servicesShutdown: {
+        worker: boolean;
+        client: boolean;
+        schedule: boolean;
+    };
+}
+
+/**
+ * Health response interface for the health controller
+ */
+export interface HealthResponse {
+    status: 'healthy' | 'degraded' | 'unhealthy';
+    timestamp: string;
+    uptime: number;
+    client: {
+        available: boolean;
+        healthy: boolean;
+        connected: boolean;
+    };
+    worker: {
+        available: boolean;
+        running: boolean;
+        healthy: boolean;
+        activitiesCount: number;
+    };
+    discovery: {
+        activities: number;
+        complete: boolean;
+        discoveredCount: number;
+    };
+    schedules: {
+        total: number;
+        active: number;
+        paused: number;
+    };
+    metadata: {
+        classes: number;
+        methods: number;
+        total: number;
+    };
+    summary: {
+        totalComponents: number;
+        healthyComponents: number;
+        degradedComponents: number;
+        unhealthyComponents: number;
     };
 }

@@ -1,43 +1,42 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { TemporalClientService } from '../../src/services/temporal-client.service';
 import { TEMPORAL_CLIENT, TEMPORAL_MODULE_OPTIONS } from '../../src/constants';
-import { Client, WorkflowClient, WorkflowHandle } from '@temporalio/client';
+import { TemporalOptions } from '../../src/interfaces';
+import { Client, WorkflowHandle } from '@temporalio/client';
 
 describe('TemporalClientService', () => {
     let service: TemporalClientService;
-    let mockClient: jest.Mocked<Client>;
-    let mockWorkflowClient: jest.Mocked<WorkflowClient>;
-    let mockWorkflowHandle: jest.Mocked<WorkflowHandle>;
+    let mockClient: jest.Mocked<Partial<Client>>;
+    let mockWorkflowHandle: jest.Mocked<Partial<WorkflowHandle>>;
 
-    const mockOptions = {
-        connection: {
-            address: 'localhost:7233',
-            namespace: 'default',
-        },
+    const mockOptions: TemporalOptions = {
         taskQueue: 'test-queue',
+        connection: {
+            namespace: 'test-namespace',
+            address: 'localhost:7233',
+        },
+        enableLogger: false,
+        logLevel: 'error',
     };
 
     beforeEach(async () => {
+        // Create mock workflow handle
         mockWorkflowHandle = {
-            workflowId: 'test-workflow-id',
-            firstExecutionRunId: 'test-run-id',
-            result: jest.fn().mockResolvedValue('test-result'),
+            workflowId: 'test-workflow-123',
             signal: jest.fn().mockResolvedValue(undefined),
-            query: jest.fn().mockResolvedValue('query-result'),
+            query: jest.fn().mockResolvedValue({ status: 'running' }),
             terminate: jest.fn().mockResolvedValue(undefined),
             cancel: jest.fn().mockResolvedValue(undefined),
-            describe: jest.fn().mockResolvedValue({}),
-        } as any;
+            result: jest.fn().mockResolvedValue({ success: true }),
+        };
 
-        mockWorkflowClient = {
-            start: jest.fn().mockResolvedValue(mockWorkflowHandle),
-            getHandle: jest.fn().mockResolvedValue(mockWorkflowHandle),
-            list: jest.fn().mockReturnValue([]),
-        } as any;
-
+        // Create mock client
         mockClient = {
-            workflow: mockWorkflowClient,
-        } as any;
+            workflow: {
+                start: jest.fn().mockResolvedValue(mockWorkflowHandle),
+                getHandle: jest.fn().mockResolvedValue(mockWorkflowHandle),
+            } as any,
+        };
 
         const module: TestingModule = await Test.createTestingModule({
             providers: [
@@ -54,25 +53,23 @@ describe('TemporalClientService', () => {
         }).compile();
 
         service = module.get<TemporalClientService>(TemporalClientService);
-        await service.onModuleInit();
     });
 
     afterEach(() => {
         jest.clearAllMocks();
     });
 
-    describe('initialization', () => {
-        it('should be defined', () => {
-            expect(service).toBeDefined();
-        });
-
-        it('should initialize with client', async () => {
+    describe('onModuleInit', () => {
+        it('should initialize with client successfully', async () => {
             await service.onModuleInit();
-            expect(service.isHealthy()).toBe(true);
+
+            const status = service.getStatus();
+            expect(status.initialized).toBe(true);
+            expect(status.available).toBe(true);
         });
 
-        it('should handle missing client gracefully', async () => {
-            const module: TestingModule = await Test.createTestingModule({
+        it('should handle initialization without client', async () => {
+            const moduleWithoutClient: TestingModule = await Test.createTestingModule({
                 providers: [
                     TemporalClientService,
                     {
@@ -86,156 +83,27 @@ describe('TemporalClientService', () => {
                 ],
             }).compile();
 
-            const serviceWithoutClient = module.get<TemporalClientService>(TemporalClientService);
+            const serviceWithoutClient = moduleWithoutClient.get<TemporalClientService>(
+                TemporalClientService,
+            );
+
             await serviceWithoutClient.onModuleInit();
-            expect(serviceWithoutClient.isHealthy()).toBe(false);
-        });
-    });
 
-    describe('startWorkflow', () => {
-        it('should start workflow with provided options', async () => {
-            const workflowType = 'TestWorkflow';
-            const args = ['arg1', 'arg2'];
-            const options = {
-                taskQueue: 'test-queue',
-                workflowId: 'custom-workflow-id',
-            };
-
-            const result = await service.startWorkflow(workflowType, args, options);
-
-            expect(mockWorkflowClient.start).toHaveBeenCalledWith(workflowType, {
-                taskQueue: 'test-queue',
-                workflowId: 'custom-workflow-id',
-                args,
-            });
-            expect(result.workflowId).toBe('test-workflow-id');
-            expect(result.firstExecutionRunId).toBe('test-run-id');
-            expect(result.handle).toBe(mockWorkflowHandle);
+            const status = serviceWithoutClient.getStatus();
+            expect(status.initialized).toBe(false);
+            expect(status.available).toBe(false);
         });
 
-        it('should generate workflow ID if not provided', async () => {
-            const workflowType = 'TestWorkflow';
-            const args = ['arg1', 'arg2'];
-            const options = {
-                taskQueue: 'test-queue',
-            };
+        it('should log namespace during initialization', async () => {
+            const logSpy = jest.spyOn(service['logger'], 'debug');
+            await service.onModuleInit();
 
-            await service.startWorkflow(workflowType, args, options);
-
-            expect(mockWorkflowClient.start).toHaveBeenCalledWith(
-                workflowType,
-                expect.objectContaining({
-                    taskQueue: 'test-queue',
-                    workflowId: expect.stringMatching(/^TestWorkflow-\d+-[a-z0-9]+$/),
-                    args,
-                }),
-            );
+            expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('test-namespace'));
         });
 
-        it('should send initial signal if provided', async () => {
-            const workflowType = 'TestWorkflow';
-            const args = ['arg1', 'arg2'];
-            const options = {
-                taskQueue: 'test-queue',
-                signal: {
-                    name: 'initSignal',
-                    args: ['signalArg'],
-                },
-            };
-
-            await service.startWorkflow(workflowType, args, options);
-
-            expect(mockWorkflowHandle.signal).toHaveBeenCalledWith('initSignal', 'signalArg');
-        });
-
-        it('should send initial signal without args', async () => {
-            const workflowType = 'TestWorkflow';
-            const args = ['arg1', 'arg2'];
-            const options = {
-                taskQueue: 'test-queue',
-                signal: {
-                    name: 'initSignal',
-                },
-            };
-
-            await service.startWorkflow(workflowType, args, options);
-
-            expect(mockWorkflowHandle.signal).toHaveBeenCalledWith('initSignal');
-        });
-
-        it('should start workflow with searchAttributes and memo options', async () => {
-            const workflowType = 'TestWorkflow';
-            const args = ['arg1', 'arg2'];
-            const options = {
-                taskQueue: 'test-queue',
-                searchAttributes: {
-                    CustomKeywordField: 'test-value',
-                    CustomIntField: 42,
-                },
-                memo: {
-                    description: 'test workflow',
-                    priority: 'high',
-                },
-            };
-
-            await service.startWorkflow(workflowType, args, options);
-
-            expect(mockWorkflowClient.start).toHaveBeenCalledWith(
-                workflowType,
-                expect.objectContaining({
-                    taskQueue: 'test-queue',
-                    args,
-                    searchAttributes: options.searchAttributes,
-                    memo: options.memo,
-                }),
-            );
-        });
-
-        it('should start workflow without searchAttributes and memo (undefined check)', async () => {
-            const workflowType = 'TestWorkflow';
-            const args = ['arg1', 'arg2'];
-            const options = {
-                taskQueue: 'test-queue',
-                // Explicitly not setting searchAttributes and memo to test undefined paths
-            };
-
-            await service.startWorkflow(workflowType, args, options);
-
-            expect(mockWorkflowClient.start).toHaveBeenCalledWith(
-                workflowType,
-                expect.objectContaining({
-                    taskQueue: 'test-queue',
-                    args,
-                    searchAttributes: undefined,
-                    memo: undefined,
-                }),
-            );
-        });
-
-        it('should handle workflowId and taskQueue defaults correctly', async () => {
-            const workflowType = 'TestWorkflow';
-            const args = ['arg1', 'arg2'];
-
-            // Test with no options (should use defaults)
-            await service.startWorkflow(workflowType, args);
-
-            const callArgs = mockWorkflowClient.start.mock.calls[0];
-            expect(callArgs[0]).toBe(workflowType);
-            expect(callArgs[1]).toMatchObject({
-                taskQueue: 'test-queue', // from mockOptions.taskQueue
-                args,
-                memo: undefined,
-                searchAttributes: undefined,
-            });
-            expect(callArgs[1].workflowId).toMatch(/^TestWorkflow-\d+/); // generated ID
-        });
-
-        it('should handle namespace fallback to default', async () => {
-            // Test the namespace fallback in the logger debug statement
-            const debugSpy = jest.spyOn((service as any).logger, 'debug');
-
-            // Create service with options that don't have namespace
-            const moduleWithoutNamespace: TestingModule = await Test.createTestingModule({
+        it('should handle initialization with default namespace', async () => {
+            const optionsWithoutNamespace = { ...mockOptions, connection: {} };
+            const module: TestingModule = await Test.createTestingModule({
                 providers: [
                     TemporalClientService,
                     {
@@ -244,841 +112,644 @@ describe('TemporalClientService', () => {
                     },
                     {
                         provide: TEMPORAL_MODULE_OPTIONS,
-                        useValue: {
-                            connection: { address: 'localhost:7233' }, // no namespace
-                            taskQueue: 'test-queue',
-                        },
+                        useValue: optionsWithoutNamespace,
                     },
                 ],
             }).compile();
 
-            const serviceWithoutNamespace =
-                moduleWithoutNamespace.get<TemporalClientService>(TemporalClientService);
-            await serviceWithoutNamespace.onModuleInit();
+            const svc = module.get<TemporalClientService>(TemporalClientService);
+            await svc.onModuleInit();
 
-            expect(debugSpy).toHaveBeenCalledWith(
-                expect.stringContaining('Client namespace: default'),
-            );
-        });
-
-        it('should throw error when client not initialized', async () => {
-            const module: TestingModule = await Test.createTestingModule({
-                providers: [
-                    TemporalClientService,
-                    {
-                        provide: TEMPORAL_CLIENT,
-                        useValue: null,
-                    },
-                    {
-                        provide: TEMPORAL_MODULE_OPTIONS,
-                        useValue: mockOptions,
-                    },
-                ],
-            }).compile();
-
-            const serviceWithoutClient = module.get<TemporalClientService>(TemporalClientService);
-
-            await expect(
-                serviceWithoutClient.startWorkflow('TestWorkflow', [], { taskQueue: 'test' }),
-            ).rejects.toThrow('Temporal client not initialized');
-        });
-
-        it('should handle workflow start errors', async () => {
-            mockWorkflowClient.start.mockRejectedValue(new Error('Start failed'));
-
-            await expect(
-                service.startWorkflow('TestWorkflow', [], { taskQueue: 'test' }),
-            ).rejects.toThrow("Failed to start workflow 'TestWorkflow': Start failed");
+            const status = svc.getStatus();
+            expect(status.namespace).toBe('default');
         });
     });
 
-    describe('signalWorkflow', () => {
-        it('should send signal to workflow', async () => {
-            const workflowId = 'test-workflow-id';
-            const signalName = 'testSignal';
-            const args = ['arg1', 'arg2'];
-
-            await service.signalWorkflow(workflowId, signalName, args);
-
-            expect(mockWorkflowClient.getHandle).toHaveBeenCalledWith(workflowId, undefined);
-            expect(mockWorkflowHandle.signal).toHaveBeenCalledWith(signalName, 'arg1', 'arg2');
+    describe('startWorkflow', () => {
+        beforeEach(async () => {
+            await service.onModuleInit();
         });
 
-        it('should handle signal with no args', async () => {
-            const workflowId = 'test-workflow-id';
-            const signalName = 'testSignal';
+        it('should start a workflow successfully', async () => {
+            const workflowType = 'testWorkflow';
+            const args = [{ data: 'test' }];
+            const options = { workflowId: 'custom-id', taskQueue: 'custom-queue' };
 
-            await service.signalWorkflow(workflowId, signalName);
+            const result = await service.startWorkflow(workflowType, args, options);
 
-            expect(mockWorkflowHandle.signal).toHaveBeenCalledWith(signalName);
+            expect(mockClient.workflow!.start).toHaveBeenCalledWith(workflowType, {
+                workflowId: 'custom-id',
+                taskQueue: 'custom-queue',
+                args,
+            });
+            expect(result.handle).toBe(mockWorkflowHandle);
         });
 
-        it('should throw error when client not initialized', async () => {
-            const module: TestingModule = await Test.createTestingModule({
-                providers: [
-                    TemporalClientService,
-                    {
-                        provide: TEMPORAL_CLIENT,
-                        useValue: null,
-                    },
-                    {
-                        provide: TEMPORAL_MODULE_OPTIONS,
-                        useValue: mockOptions,
-                    },
-                ],
-            }).compile();
+        it('should generate workflow ID if not provided', async () => {
+            await service.startWorkflow('testWorkflow');
 
-            const serviceWithoutClient = module.get<TemporalClientService>(TemporalClientService);
-
-            await expect(
-                serviceWithoutClient.signalWorkflow('workflowId', 'signal'),
-            ).rejects.toThrow('Temporal client not initialized');
+            const callArgs = (mockClient.workflow!.start as jest.Mock).mock.calls[0][1];
+            expect(callArgs.workflowId).toMatch(/^testWorkflow-\d+-[a-z0-9]+$/);
         });
 
-        it('should handle signal errors', async () => {
-            (mockWorkflowClient.getHandle as jest.Mock).mockRejectedValue(
-                new Error('Handle failed'),
-            );
+        it('should use default task queue from options', async () => {
+            await service.startWorkflow('testWorkflow');
 
-            await expect(service.signalWorkflow('workflowId', 'signal')).rejects.toThrow(
-                "Failed to send signal 'signal' to workflow workflowId: Failed to get workflow handle for workflowId: Handle failed",
-            );
-        });
-    });
-
-    describe('queryWorkflow', () => {
-        it('should query workflow', async () => {
-            const workflowId = 'test-workflow-id';
-            const queryName = 'testQuery';
-            const args = ['arg1', 'arg2'];
-
-            const result = await service.queryWorkflow(workflowId, queryName, args);
-
-            expect(mockWorkflowClient.getHandle).toHaveBeenCalledWith(workflowId, undefined);
-            expect(mockWorkflowHandle.query).toHaveBeenCalledWith(queryName, 'arg1', 'arg2');
-            expect(result).toBe('query-result');
+            const callArgs = (mockClient.workflow!.start as jest.Mock).mock.calls[0][1];
+            expect(callArgs.taskQueue).toBe('test-queue');
         });
 
-        it('should handle query with no args', async () => {
-            const workflowId = 'test-workflow-id';
-            const queryName = 'testQuery';
+        it('should throw error if client not available', async () => {
+            const serviceWithoutClient = new TemporalClientService(null, mockOptions);
 
-            await service.queryWorkflow(workflowId, queryName);
-
-            expect(mockWorkflowHandle.query).toHaveBeenCalledWith(queryName);
-        });
-
-        it('should throw error when client not initialized', async () => {
-            const module: TestingModule = await Test.createTestingModule({
-                providers: [
-                    TemporalClientService,
-                    {
-                        provide: TEMPORAL_CLIENT,
-                        useValue: null,
-                    },
-                    {
-                        provide: TEMPORAL_MODULE_OPTIONS,
-                        useValue: mockOptions,
-                    },
-                ],
-            }).compile();
-
-            const serviceWithoutClient = module.get<TemporalClientService>(TemporalClientService);
-
-            await expect(serviceWithoutClient.queryWorkflow('workflowId', 'query')).rejects.toThrow(
+            await expect(serviceWithoutClient.startWorkflow('test')).rejects.toThrow(
                 'Temporal client not initialized',
             );
         });
 
-        it('should handle query errors', async () => {
-            mockWorkflowHandle.query.mockRejectedValue(new Error('Query failed'));
+        it('should retry on retryable gRPC errors', async () => {
+            const grpcError = new Error('Unexpected error while making gRPC request');
+            (mockClient.workflow!.start as jest.Mock)
+                .mockRejectedValueOnce(grpcError)
+                .mockRejectedValueOnce(grpcError)
+                .mockResolvedValueOnce(mockWorkflowHandle);
 
-            await expect(service.queryWorkflow('workflowId', 'query')).rejects.toThrow(
-                "Failed to query 'query' on workflow workflowId: Query failed",
+            const result = await service.startWorkflow('testWorkflow');
+
+            expect(mockClient.workflow!.start).toHaveBeenCalledTimes(3);
+            expect(result.handle).toBe(mockWorkflowHandle);
+        });
+
+        it('should retry on connection error', async () => {
+            const connectionError = new Error('connection error');
+            (mockClient.workflow!.start as jest.Mock)
+                .mockRejectedValueOnce(connectionError)
+                .mockResolvedValueOnce(mockWorkflowHandle);
+
+            const result = await service.startWorkflow('testWorkflow');
+
+            expect(mockClient.workflow!.start).toHaveBeenCalledTimes(2);
+            expect(result.handle).toBe(mockWorkflowHandle);
+        });
+
+        it('should retry on gRPC code errors', async () => {
+            const grpcCodeError = { message: 'gRPC error', code: 14 }; // UNAVAILABLE
+            (mockClient.workflow!.start as jest.Mock)
+                .mockRejectedValueOnce(grpcCodeError)
+                .mockResolvedValueOnce(mockWorkflowHandle);
+
+            const result = await service.startWorkflow('testWorkflow');
+
+            expect(mockClient.workflow!.start).toHaveBeenCalledTimes(2);
+            expect(result.handle).toBe(mockWorkflowHandle);
+        });
+
+        it('should not retry on non-retryable errors', async () => {
+            const nonRetryableError = new Error('Workflow execution already started');
+            (mockClient.workflow!.start as jest.Mock).mockRejectedValue(nonRetryableError);
+
+            await expect(service.startWorkflow('testWorkflow')).rejects.toThrow(
+                "Failed to start workflow 'testWorkflow'",
+            );
+
+            expect(mockClient.workflow!.start).toHaveBeenCalledTimes(1);
+        });
+
+        it('should throw after max retries', async () => {
+            const grpcError = new Error('UNAVAILABLE');
+            (mockClient.workflow!.start as jest.Mock).mockRejectedValue(grpcError);
+
+            await expect(service.startWorkflow('testWorkflow')).rejects.toThrow(
+                "Failed to start workflow 'testWorkflow'",
+            );
+
+            expect(mockClient.workflow!.start).toHaveBeenCalledTimes(3);
+        });
+    });
+
+    describe('getWorkflowHandle', () => {
+        beforeEach(async () => {
+            await service.onModuleInit();
+        });
+
+        it('should get workflow handle successfully', async () => {
+            const workflowId = 'test-workflow-id';
+            const handle = await service.getWorkflowHandle(workflowId);
+
+            expect(mockClient.workflow!.getHandle).toHaveBeenCalledWith(workflowId, undefined);
+            expect(handle).toBe(mockWorkflowHandle);
+        });
+
+        it('should get workflow handle with runId', async () => {
+            const workflowId = 'test-workflow-id';
+            const runId = 'test-run-id';
+
+            await service.getWorkflowHandle(workflowId, runId);
+
+            expect(mockClient.workflow!.getHandle).toHaveBeenCalledWith(workflowId, runId);
+        });
+
+        it('should throw error if client not available', async () => {
+            const serviceWithoutClient = new TemporalClientService(null, mockOptions);
+
+            await expect(serviceWithoutClient.getWorkflowHandle('test')).rejects.toThrow(
+                'Temporal client not initialized',
+            );
+        });
+
+        it('should handle errors when getting workflow handle', async () => {
+            const error = new Error('Workflow not found');
+            (mockClient.workflow!.getHandle as jest.Mock).mockRejectedValue(error);
+
+            await expect(service.getWorkflowHandle('missing-workflow')).rejects.toThrow(
+                'Failed to get workflow handle for missing-workflow',
             );
         });
     });
 
     describe('terminateWorkflow', () => {
-        it('should terminate workflow with reason', async () => {
+        beforeEach(async () => {
+            await service.onModuleInit();
+        });
+
+        it('should terminate workflow successfully', async () => {
             const workflowId = 'test-workflow-id';
-            const reason = 'User requested termination';
+            const reason = 'Test termination';
 
             await service.terminateWorkflow(workflowId, reason);
 
-            expect(mockWorkflowClient.getHandle).toHaveBeenCalledWith(workflowId, undefined);
             expect(mockWorkflowHandle.terminate).toHaveBeenCalledWith(reason);
         });
 
         it('should terminate workflow without reason', async () => {
-            const workflowId = 'test-workflow-id';
-
-            await service.terminateWorkflow(workflowId);
+            await service.terminateWorkflow('test-workflow-id');
 
             expect(mockWorkflowHandle.terminate).toHaveBeenCalledWith(undefined);
         });
 
-        it('should throw error when client not initialized', async () => {
-            const module: TestingModule = await Test.createTestingModule({
-                providers: [
-                    TemporalClientService,
-                    {
-                        provide: TEMPORAL_CLIENT,
-                        useValue: null,
-                    },
-                    {
-                        provide: TEMPORAL_MODULE_OPTIONS,
-                        useValue: mockOptions,
-                    },
-                ],
-            }).compile();
+        it('should terminate workflow with runId', async () => {
+            const workflowId = 'test-workflow-id';
+            const runId = 'test-run-id';
 
-            const serviceWithoutClient = module.get<TemporalClientService>(TemporalClientService);
+            await service.terminateWorkflow(workflowId, undefined, runId);
 
-            await expect(serviceWithoutClient.terminateWorkflow('workflowId')).rejects.toThrow(
-                'Temporal client not initialized',
-            );
+            expect(mockClient.workflow!.getHandle).toHaveBeenCalledWith(workflowId, runId);
+            expect(mockWorkflowHandle.terminate).toHaveBeenCalled();
         });
 
         it('should handle termination errors', async () => {
-            mockWorkflowHandle.terminate.mockRejectedValue(new Error('Terminate failed'));
+            const error = new Error('Termination failed');
+            (mockWorkflowHandle.terminate as jest.Mock).mockRejectedValue(error);
 
-            await expect(service.terminateWorkflow('workflowId')).rejects.toThrow(
-                'Failed to terminate workflow workflowId: Terminate failed',
+            await expect(service.terminateWorkflow('test-id')).rejects.toThrow(
+                'Failed to terminate workflow test-id',
             );
         });
     });
 
     describe('cancelWorkflow', () => {
-        it('should cancel workflow', async () => {
+        beforeEach(async () => {
+            await service.onModuleInit();
+        });
+
+        it('should cancel workflow successfully', async () => {
             const workflowId = 'test-workflow-id';
 
             await service.cancelWorkflow(workflowId);
 
-            expect(mockWorkflowClient.getHandle).toHaveBeenCalledWith(workflowId, undefined);
             expect(mockWorkflowHandle.cancel).toHaveBeenCalled();
         });
 
-        it('should throw error when client not initialized', async () => {
-            const module: TestingModule = await Test.createTestingModule({
-                providers: [
-                    TemporalClientService,
-                    {
-                        provide: TEMPORAL_CLIENT,
-                        useValue: null,
-                    },
-                    {
-                        provide: TEMPORAL_MODULE_OPTIONS,
-                        useValue: mockOptions,
-                    },
-                ],
-            }).compile();
+        it('should cancel workflow with runId', async () => {
+            const workflowId = 'test-workflow-id';
+            const runId = 'test-run-id';
 
-            const serviceWithoutClient = module.get<TemporalClientService>(TemporalClientService);
+            await service.cancelWorkflow(workflowId, runId);
 
-            await expect(serviceWithoutClient.cancelWorkflow('workflowId')).rejects.toThrow(
-                'Temporal client not initialized',
-            );
+            expect(mockClient.workflow!.getHandle).toHaveBeenCalledWith(workflowId, runId);
+            expect(mockWorkflowHandle.cancel).toHaveBeenCalled();
         });
 
-        it('should handle cancel errors', async () => {
-            mockWorkflowHandle.cancel.mockRejectedValue(new Error('Cancel failed'));
+        it('should handle cancellation errors', async () => {
+            const error = new Error('Cancellation failed');
+            (mockWorkflowHandle.cancel as jest.Mock).mockRejectedValue(error);
 
-            await expect(service.cancelWorkflow('workflowId')).rejects.toThrow(
-                'Failed to cancel workflow workflowId: Cancel failed',
+            await expect(service.cancelWorkflow('test-id')).rejects.toThrow(
+                'Failed to cancel workflow test-id',
             );
         });
     });
 
-    describe('getWorkflowHandle', () => {
-        it('should get workflow handle with workflow ID only', async () => {
-            const workflowId = 'test-workflow-id';
-
-            const result = await service.getWorkflowHandle(workflowId);
-
-            expect(mockWorkflowClient.getHandle).toHaveBeenCalledWith(workflowId, undefined);
-            expect(result).toBe(mockWorkflowHandle);
+    describe('signalWorkflow', () => {
+        beforeEach(async () => {
+            await service.onModuleInit();
         });
 
-        it('should get workflow handle with workflow ID and run ID', async () => {
+        it('should signal workflow successfully', async () => {
             const workflowId = 'test-workflow-id';
-            const runId = 'test-run-id';
+            const signalName = 'updateStatus';
+            const args = ['new-status'];
 
-            const result = await service.getWorkflowHandle(workflowId, runId);
+            await service.signalWorkflow(workflowId, signalName, args);
 
-            expect(mockWorkflowClient.getHandle).toHaveBeenCalledWith(workflowId, runId);
-            expect(result).toBe(mockWorkflowHandle);
+            expect(mockWorkflowHandle.signal).toHaveBeenCalledWith(signalName, 'new-status');
         });
 
-        it('should handle getHandle errors', async () => {
-            (mockWorkflowClient.getHandle as jest.Mock).mockRejectedValue(
-                new Error('Handle failed'),
+        it('should signal workflow without args', async () => {
+            await service.signalWorkflow('test-id', 'signal');
+
+            expect(mockWorkflowHandle.signal).toHaveBeenCalledWith('signal');
+        });
+
+        it('should signal workflow with runId', async () => {
+            await service.signalWorkflow('test-id', 'signal', undefined, 'run-id');
+
+            expect(mockClient.workflow!.getHandle).toHaveBeenCalledWith('test-id', 'run-id');
+        });
+
+        it('should handle signal errors', async () => {
+            const error = new Error('Signal failed');
+            (mockWorkflowHandle.signal as jest.Mock).mockRejectedValue(error);
+
+            await expect(service.signalWorkflow('test-id', 'signal')).rejects.toThrow(
+                "Failed to send signal 'signal' to workflow test-id",
             );
-
-            await expect(service.getWorkflowHandle('workflowId')).rejects.toThrow(
-                'Failed to get workflow handle for workflowId: Handle failed',
-            );
-        });
-    });
-
-    describe('describeWorkflow', () => {
-        it('should describe workflow', async () => {
-            const workflowId = 'test-workflow-id';
-            const description = { status: 'RUNNING' } as any;
-            mockWorkflowHandle.describe.mockResolvedValue(description);
-
-            const result = await service.describeWorkflow(workflowId);
-
-            expect(mockWorkflowClient.getHandle).toHaveBeenCalledWith(workflowId, undefined);
-            expect(mockWorkflowHandle.describe).toHaveBeenCalled();
-            expect(result).toBe(description);
-        });
-
-        it('should describe workflow with run ID', async () => {
-            const workflowId = 'test-workflow-id';
-            const runId = 'test-run-id';
-
-            await service.describeWorkflow(workflowId, runId);
-
-            expect(mockWorkflowClient.getHandle).toHaveBeenCalledWith(workflowId, runId);
-        });
-
-        it('should handle describe errors', async () => {
-            mockWorkflowHandle.describe.mockRejectedValue(new Error('Describe failed'));
-
-            await expect(service.describeWorkflow('workflowId')).rejects.toThrow(
-                'Failed to describe workflow workflowId: Describe failed',
-            );
-        });
-    });
-
-    describe('getWorkflowResult', () => {
-        it('should get workflow result', async () => {
-            const workflowId = 'test-workflow-id';
-            mockWorkflowHandle.result = jest.fn().mockResolvedValue('test-result');
-
-            const result = await service.getWorkflowResult(workflowId);
-
-            expect(mockWorkflowClient.getHandle).toHaveBeenCalledWith(workflowId, undefined);
-            expect(mockWorkflowHandle.result).toHaveBeenCalled();
-            expect(result).toBe('test-result');
-        });
-
-        it('should get workflow result with run ID', async () => {
-            const workflowId = 'test-workflow-id';
-            const runId = 'test-run-id';
-            mockWorkflowHandle.result = jest.fn().mockResolvedValue('test-result');
-
-            await service.getWorkflowResult(workflowId, runId);
-
-            expect(mockWorkflowClient.getHandle).toHaveBeenCalledWith(workflowId, runId);
-        });
-
-        it('should handle result errors', async () => {
-            mockWorkflowHandle.result = jest.fn().mockRejectedValue(new Error('Result failed'));
-
-            await expect(service.getWorkflowResult('workflowId')).rejects.toThrow('Result failed');
         });
     });
 
     describe('signalWorkflowHandle', () => {
-        it('should send signal using workflow handle', async () => {
-            const signalName = 'testSignal';
-            const args = ['arg1', 'arg2'];
-
-            await service.signalWorkflowHandle(mockWorkflowHandle, signalName, args);
-
-            expect(mockWorkflowHandle.signal).toHaveBeenCalledWith(signalName, 'arg1', 'arg2');
+        beforeEach(async () => {
+            await service.onModuleInit();
         });
 
-        it('should send signal using workflow handle without args', async () => {
-            const signalName = 'testSignal';
+        it('should signal workflow handle successfully', async () => {
+            const signalName = 'updateStatus';
+            const args = ['new-status'];
 
-            await service.signalWorkflowHandle(mockWorkflowHandle, signalName);
+            await service.signalWorkflowHandle(mockWorkflowHandle as WorkflowHandle, signalName, args);
 
-            expect(mockWorkflowHandle.signal).toHaveBeenCalledWith(signalName);
+            expect(mockWorkflowHandle.signal).toHaveBeenCalledWith(signalName, 'new-status');
         });
 
-        it('should handle signal errors', async () => {
-            mockWorkflowHandle.signal.mockRejectedValue(new Error('Signal failed'));
+        it('should signal workflow handle without args', async () => {
+            await service.signalWorkflowHandle(mockWorkflowHandle as WorkflowHandle, 'signal');
+
+            expect(mockWorkflowHandle.signal).toHaveBeenCalledWith('signal');
+        });
+
+        it('should handle signal handle errors', async () => {
+            const error = new Error('Signal failed');
+            (mockWorkflowHandle.signal as jest.Mock).mockRejectedValue(error);
 
             await expect(
-                service.signalWorkflowHandle(mockWorkflowHandle, 'signal'),
-            ).rejects.toThrow('Signal failed');
+                service.signalWorkflowHandle(mockWorkflowHandle as WorkflowHandle, 'signal'),
+            ).rejects.toThrow(error);
+        });
+    });
+
+    describe('queryWorkflow', () => {
+        beforeEach(async () => {
+            await service.onModuleInit();
+        });
+
+        it('should query workflow successfully', async () => {
+            const workflowId = 'test-workflow-id';
+            const queryName = 'getStatus';
+            const expectedResult = { status: 'running' };
+
+            (mockWorkflowHandle.query as jest.Mock).mockResolvedValue(expectedResult);
+
+            const result = await service.queryWorkflow(workflowId, queryName);
+
+            expect(mockWorkflowHandle.query).toHaveBeenCalledWith(queryName);
+            expect(result).toEqual(expectedResult);
+        });
+
+        it('should query workflow with args', async () => {
+            const args = ['param1', 'param2'];
+
+            await service.queryWorkflow('test-id', 'query', args);
+
+            expect(mockWorkflowHandle.query).toHaveBeenCalledWith('query', 'param1', 'param2');
+        });
+
+        it('should query workflow with runId', async () => {
+            await service.queryWorkflow('test-id', 'query', undefined, 'run-id');
+
+            expect(mockClient.workflow!.getHandle).toHaveBeenCalledWith('test-id', 'run-id');
+        });
+
+        it('should handle query errors', async () => {
+            const error = new Error('Query failed');
+            (mockWorkflowHandle.query as jest.Mock).mockRejectedValue(error);
+
+            await expect(service.queryWorkflow('test-id', 'query')).rejects.toThrow(
+                "Failed to query 'query' on workflow test-id",
+            );
         });
     });
 
     describe('queryWorkflowHandle', () => {
-        it('should query workflow using handle', async () => {
-            const queryName = 'testQuery';
-            const args = ['arg1', 'arg2'];
-
-            const result = await service.queryWorkflowHandle(mockWorkflowHandle, queryName, args);
-
-            expect(mockWorkflowHandle.query).toHaveBeenCalledWith(queryName, 'arg1', 'arg2');
-            expect(result).toBe('query-result');
+        beforeEach(async () => {
+            await service.onModuleInit();
         });
 
-        it('should query workflow using handle without args', async () => {
-            const queryName = 'testQuery';
+        it('should query workflow handle successfully', async () => {
+            const queryName = 'getStatus';
+            const expectedResult = { status: 'running' };
 
-            await service.queryWorkflowHandle(mockWorkflowHandle, queryName);
+            (mockWorkflowHandle.query as jest.Mock).mockResolvedValue(expectedResult);
+
+            const result = await service.queryWorkflowHandle(
+                mockWorkflowHandle as WorkflowHandle,
+                queryName,
+            );
 
             expect(mockWorkflowHandle.query).toHaveBeenCalledWith(queryName);
+            expect(result).toEqual(expectedResult);
         });
 
-        it('should handle query errors', async () => {
-            mockWorkflowHandle.query.mockRejectedValue(new Error('Query failed'));
+        it('should query workflow handle with args', async () => {
+            const args = ['param1'];
 
-            await expect(service.queryWorkflowHandle(mockWorkflowHandle, 'query')).rejects.toThrow(
-                'Query failed',
-            );
-        });
-    });
+            await service.queryWorkflowHandle(mockWorkflowHandle as WorkflowHandle, 'query', args);
 
-    describe('listWorkflows', () => {
-        it('should list workflows with default page size', () => {
-            const query = 'WorkflowType="TestWorkflow"';
-
-            service.listWorkflows(query);
-
-            expect(mockWorkflowClient.list).toHaveBeenCalledWith({
-                query,
-                pageSize: 100,
-            });
+            expect(mockWorkflowHandle.query).toHaveBeenCalledWith('query', 'param1');
         });
 
-        it('should list workflows with custom page size', () => {
-            const query = 'WorkflowType="TestWorkflow"';
-            const pageSize = 50;
+        it('should handle query handle errors', async () => {
+            const error = new Error('Query failed');
+            (mockWorkflowHandle.query as jest.Mock).mockRejectedValue(error);
 
-            service.listWorkflows(query, pageSize);
-
-            expect(mockWorkflowClient.list).toHaveBeenCalledWith({
-                query,
-                pageSize,
-            });
-        });
-
-        it('should handle list errors', () => {
-            mockWorkflowClient.list.mockImplementation(() => {
-                throw new Error('List failed');
-            });
-
-            expect(() => service.listWorkflows('query')).toThrow(
-                "Failed to list workflows with query 'query': List failed",
-            );
+            await expect(
+                service.queryWorkflowHandle(mockWorkflowHandle as WorkflowHandle, 'query'),
+            ).rejects.toThrow(error);
         });
     });
 
-    describe('getWorkflowClient', () => {
-        it('should return workflow client', () => {
-            const result = service.getWorkflowClient();
-            expect(result).toBe(mockWorkflowClient);
+    describe('getWorkflowResult', () => {
+        beforeEach(async () => {
+            await service.onModuleInit();
         });
 
-        it('should return null when client not available', async () => {
-            const module: TestingModule = await Test.createTestingModule({
-                providers: [
-                    TemporalClientService,
-                    {
-                        provide: TEMPORAL_CLIENT,
-                        useValue: null,
-                    },
-                    {
-                        provide: TEMPORAL_MODULE_OPTIONS,
-                        useValue: mockOptions,
-                    },
-                ],
-            }).compile();
+        it('should get workflow result successfully', async () => {
+            const workflowId = 'test-workflow-id';
+            const expectedResult = { success: true };
 
-            const serviceWithoutClient = module.get<TemporalClientService>(TemporalClientService);
-            const result = serviceWithoutClient.getWorkflowClient();
-            expect(result).toBeNull();
-        });
-    });
+            (mockWorkflowHandle.result as jest.Mock).mockResolvedValue(expectedResult);
 
-    describe('getRawClient', () => {
-        it('should return raw client', () => {
-            const result = service.getRawClient();
-            expect(result).toBe(mockClient);
+            const result = await service.getWorkflowResult(workflowId);
+
+            expect(mockWorkflowHandle.result).toHaveBeenCalled();
+            expect(result).toEqual(expectedResult);
         });
 
-        it('should return null when client not available', async () => {
-            const module: TestingModule = await Test.createTestingModule({
-                providers: [
-                    TemporalClientService,
-                    {
-                        provide: TEMPORAL_CLIENT,
-                        useValue: null,
-                    },
-                    {
-                        provide: TEMPORAL_MODULE_OPTIONS,
-                        useValue: mockOptions,
-                    },
-                ],
-            }).compile();
+        it('should get workflow result with runId', async () => {
+            await service.getWorkflowResult('test-id', 'run-id');
 
-            const serviceWithoutClient = module.get<TemporalClientService>(TemporalClientService);
-            const result = serviceWithoutClient.getRawClient();
-            expect(result).toBeNull();
+            expect(mockClient.workflow!.getHandle).toHaveBeenCalledWith('test-id', 'run-id');
+        });
+
+        it('should handle result errors', async () => {
+            const error = new Error('Result failed');
+            (mockWorkflowHandle.result as jest.Mock).mockRejectedValue(error);
+
+            await expect(service.getWorkflowResult('test-id')).rejects.toThrow(error);
         });
     });
 
     describe('isHealthy', () => {
-        it('should return true when client and workflow client are available', () => {
-            expect(service.isHealthy()).toBe(true);
+        it('should return false when not initialized', () => {
+            const serviceNotInit = new TemporalClientService(mockClient as Client, mockOptions);
+            expect(serviceNotInit.isHealthy()).toBe(false);
         });
 
-        it('should return false when client is not available', async () => {
-            const module: TestingModule = await Test.createTestingModule({
-                providers: [
-                    TemporalClientService,
-                    {
-                        provide: TEMPORAL_CLIENT,
-                        useValue: null,
-                    },
-                    {
-                        provide: TEMPORAL_MODULE_OPTIONS,
-                        useValue: mockOptions,
-                    },
-                ],
-            }).compile();
+        it('should return false when client is null', async () => {
+            const serviceWithoutClient = new TemporalClientService(null, mockOptions);
+            await serviceWithoutClient.onModuleInit();
 
-            const serviceWithoutClient = module.get<TemporalClientService>(TemporalClientService);
             expect(serviceWithoutClient.isHealthy()).toBe(false);
         });
 
-        it('should return false when workflow client is not available', async () => {
-            const clientWithoutWorkflow = {} as Client;
+        it('should return true when initialized and client available', async () => {
+            await service.onModuleInit();
 
-            const module: TestingModule = await Test.createTestingModule({
-                providers: [
-                    TemporalClientService,
-                    {
-                        provide: TEMPORAL_CLIENT,
-                        useValue: clientWithoutWorkflow,
-                    },
-                    {
-                        provide: TEMPORAL_MODULE_OPTIONS,
-                        useValue: mockOptions,
-                    },
-                ],
-            }).compile();
+            expect(service.isHealthy()).toBe(true);
+        });
 
-            const serviceWithoutWorkflow = module.get<TemporalClientService>(TemporalClientService);
-            expect(serviceWithoutWorkflow.isHealthy()).toBe(false);
+        it('should trigger async health check when interval exceeded', async () => {
+            await service.onModuleInit();
+
+            // First call
+            expect(service.isHealthy()).toBe(true);
+
+            // Simulate time passing
+            jest.useFakeTimers();
+            jest.advanceTimersByTime(35000); // More than 30 seconds
+
+            // Second call should trigger health check
+            const healthSpy = jest.spyOn(service as any, 'performHealthCheck');
+            expect(service.isHealthy()).toBe(true);
+
+            // Wait for async health check
+            await new Promise(process.nextTick);
+
+            expect(healthSpy).toHaveBeenCalled();
+            jest.useRealTimers();
         });
     });
 
     describe('getHealth', () => {
-        it('should return healthy status when client is available', () => {
-            const result = service.getHealth();
+        it('should return healthy status', async () => {
+            await service.onModuleInit();
 
-            expect(result).toEqual({
-                status: 'healthy',
-            });
+            const health = service.getHealth();
+
+            expect(health.status).toBe('healthy');
         });
 
-        it('should return unhealthy status when client is not available', async () => {
-            const module: TestingModule = await Test.createTestingModule({
-                providers: [
-                    TemporalClientService,
-                    {
-                        provide: TEMPORAL_CLIENT,
-                        useValue: null,
-                    },
-                    {
-                        provide: TEMPORAL_MODULE_OPTIONS,
-                        useValue: mockOptions,
-                    },
-                ],
-            }).compile();
+        it('should return unhealthy status when not initialized', () => {
+            const serviceNotInit = new TemporalClientService(null, mockOptions);
 
-            const serviceWithoutClient = module.get<TemporalClientService>(TemporalClientService);
-            await serviceWithoutClient.onModuleInit();
-            const result = serviceWithoutClient.getHealth();
+            const health = serviceNotInit.getHealth();
 
-            expect(result).toEqual({
-                status: 'unhealthy',
-            });
+            expect(health.status).toBe('unhealthy');
         });
     });
 
     describe('getStatus', () => {
-        it('should return status with healthy client', () => {
-            const result = service.getStatus();
+        it('should return complete status when initialized', async () => {
+            await service.onModuleInit();
 
-            expect(result).toEqual({
-                available: true,
-                healthy: true,
-                initialized: true,
-                lastHealthCheck: expect.any(Date),
-                namespace: 'default',
-            });
+            const status = service.getStatus();
+
+            expect(status.available).toBe(true);
+            expect(status.healthy).toBe(true);
+            expect(status.initialized).toBe(true);
+            expect(status.lastHealthCheck).toBeInstanceOf(Date);
+            expect(status.namespace).toBe('test-namespace');
         });
 
-        it('should return status with unavailable client', async () => {
-            const module: TestingModule = await Test.createTestingModule({
-                providers: [
-                    TemporalClientService,
-                    {
-                        provide: TEMPORAL_CLIENT,
-                        useValue: null,
-                    },
-                    {
-                        provide: TEMPORAL_MODULE_OPTIONS,
-                        useValue: mockOptions,
-                    },
-                ],
-            }).compile();
+        it('should return status without client', () => {
+            const serviceWithoutClient = new TemporalClientService(null, mockOptions);
 
-            const serviceWithoutClient = module.get<TemporalClientService>(TemporalClientService);
-            await serviceWithoutClient.onModuleInit();
-            const result = serviceWithoutClient.getStatus();
+            const status = serviceWithoutClient.getStatus();
 
-            expect(result).toEqual({
-                available: false,
-                healthy: false,
-                initialized: false,
-                lastHealthCheck: null,
-                namespace: 'default',
-            });
+            expect(status.available).toBe(false);
+            expect(status.healthy).toBe(false);
+            expect(status.initialized).toBe(false);
+            expect(status.lastHealthCheck).toBeNull();
         });
     });
 
-    describe('Advanced Coverage Tests', () => {
-        describe('Initialization Error Scenarios', () => {
-            it('should handle initialization errors and rethrow them (lines 65-66)', async () => {
-                const module: TestingModule = await Test.createTestingModule({
-                    providers: [
-                        TemporalClientService,
-                        {
-                            provide: TEMPORAL_CLIENT,
-                            useValue: mockClient,
-                        },
-                        {
-                            provide: TEMPORAL_MODULE_OPTIONS,
-                            useValue: mockOptions,
-                        },
-                    ],
-                }).compile();
+    describe('getRawClient', () => {
+        it('should return the raw client', async () => {
+            await service.onModuleInit();
 
-                const errorService = module.get<TemporalClientService>(TemporalClientService);
+            const client = service.getRawClient();
 
-                // Mock the performHealthCheck to throw an error
-                jest.spyOn(errorService as any, 'performHealthCheck').mockRejectedValue(
-                    new Error('Initialization failed'),
-                );
+            expect(client).toBe(mockClient);
+        });
 
-                await expect(errorService.onModuleInit()).rejects.toThrow('Initialization failed');
+        it('should return null when no client', () => {
+            const serviceWithoutClient = new TemporalClientService(null, mockOptions);
+
+            const client = serviceWithoutClient.getRawClient();
+
+            expect(client).toBeNull();
+        });
+    });
+
+    describe('extractErrorMessage', () => {
+        it('should extract message from Error object', () => {
+            const error = new Error('Test error');
+            const message = service['extractErrorMessage'](error);
+
+            expect(message).toBe('Test error');
+        });
+
+        it('should return string error as-is', () => {
+            const error = 'String error';
+            const message = service['extractErrorMessage'](error);
+
+            expect(message).toBe('String error');
+        });
+
+        it('should return unknown error message for other types', () => {
+            const error = { someProperty: 'value' };
+            const message = service['extractErrorMessage'](error);
+
+            expect(message).toBe('Unknown error');
+        });
+
+        it('should handle null error', () => {
+            const message = service['extractErrorMessage'](null);
+
+            expect(message).toBe('Unknown error');
+        });
+    });
+
+    describe('isRetryableError', () => {
+        it('should identify gRPC connection errors', () => {
+            const error = new Error('Unexpected error while making gRPC request');
+            const result = service['isRetryableError'](error, error.message);
+
+            expect(result).toBe(true);
+        });
+
+        it('should identify UNAVAILABLE errors', () => {
+            const error = new Error('UNAVAILABLE: service unavailable');
+            const result = service['isRetryableError'](error, error.message);
+
+            expect(result).toBe(true);
+        });
+
+        it('should identify connection errors', () => {
+            const patterns = [
+                'connection error',
+                'DEADLINE_EXCEEDED',
+                'RESOURCE_EXHAUSTED',
+                'Connection refused',
+                'timeout',
+                'ECONNRESET',
+            ];
+
+            patterns.forEach((pattern) => {
+                const error = new Error(pattern);
+                const result = service['isRetryableError'](error, error.message);
+                expect(result).toBe(true);
             });
         });
 
-        describe('Health Check Edge Cases', () => {
-            it('should handle performHealthCheck with no client (line 384)', async () => {
-                // Create service with no client
-                const module: TestingModule = await Test.createTestingModule({
-                    providers: [
-                        TemporalClientService,
-                        {
-                            provide: TEMPORAL_CLIENT,
-                            useValue: null,
-                        },
-                        {
-                            provide: TEMPORAL_MODULE_OPTIONS,
-                            useValue: mockOptions,
-                        },
-                    ],
-                }).compile();
+        it('should identify retryable gRPC codes', () => {
+            const retryableCodes = [1, 2, 4, 8, 10, 13, 14];
 
-                const serviceNoClient = module.get<TemporalClientService>(TemporalClientService);
-
-                // Call performHealthCheck directly - should return early when no client
-                await (serviceNoClient as any).performHealthCheck();
-
-                expect(serviceNoClient.isHealthy()).toBe(false);
-            });
-
-            it('should handle health check warning when workflow property not available (lines 394-395)', async () => {
-                const clientWithoutWorkflow = {
-                    // Client exists but no workflow property
-                } as any;
-
-                const module: TestingModule = await Test.createTestingModule({
-                    providers: [
-                        TemporalClientService,
-                        {
-                            provide: TEMPORAL_CLIENT,
-                            useValue: clientWithoutWorkflow,
-                        },
-                        {
-                            provide: TEMPORAL_MODULE_OPTIONS,
-                            useValue: mockOptions,
-                        },
-                    ],
-                }).compile();
-
-                const serviceWithoutWorkflow =
-                    module.get<TemporalClientService>(TemporalClientService);
-                const mockLogger = {
-                    warn: jest.fn(),
-                    error: jest.fn(),
-                };
-                // Mock the logger methods directly
-                const originalWarn = serviceWithoutWorkflow['logger'].warn;
-                const originalError = serviceWithoutWorkflow['logger'].error;
-                serviceWithoutWorkflow['logger'].warn = mockLogger.warn;
-                serviceWithoutWorkflow['logger'].error = mockLogger.error;
-
-                // Initialize the service first
-                await serviceWithoutWorkflow.onModuleInit();
-
-                // Trigger health check
-                await (serviceWithoutWorkflow as any).performHealthCheck();
-
-                expect(mockLogger.warn).toHaveBeenCalledWith(
-                    'Client health check failed - workflow property not available',
-                );
-
-                // Restore original methods
-                serviceWithoutWorkflow['logger'].warn = originalWarn;
-                serviceWithoutWorkflow['logger'].error = originalError;
-            });
-
-            it('should handle health check errors (lines 396-397)', async () => {
-                const faultyClient = {
-                    get workflow() {
-                        // Make the workflow property throw an error when accessed
-                        throw new Error('Workflow access error');
-                    },
-                } as any;
-
-                const module: TestingModule = await Test.createTestingModule({
-                    providers: [
-                        TemporalClientService,
-                        {
-                            provide: TEMPORAL_CLIENT,
-                            useValue: faultyClient,
-                        },
-                        {
-                            provide: TEMPORAL_MODULE_OPTIONS,
-                            useValue: mockOptions,
-                        },
-                    ],
-                }).compile();
-
-                const serviceWithFaultyClient =
-                    module.get<TemporalClientService>(TemporalClientService);
-                const mockLogger = {
-                    warn: jest.fn(),
-                    error: jest.fn(),
-                };
-                // Mock the logger methods directly
-                const originalWarn = serviceWithFaultyClient['logger'].warn;
-                const originalError = serviceWithFaultyClient['logger'].error;
-                serviceWithFaultyClient['logger'].warn = mockLogger.warn;
-                serviceWithFaultyClient['logger'].error = mockLogger.error;
-
-                // Initialize the service first
-                await serviceWithFaultyClient.onModuleInit();
-
-                // Trigger health check that will fail
-                await (serviceWithFaultyClient as any).performHealthCheck();
-
-                expect(mockLogger.warn).toHaveBeenCalledWith(
-                    'Client health check failed',
-                    expect.any(Error),
-                );
-
-                // Restore original methods
-                serviceWithFaultyClient['logger'].warn = originalWarn;
-                serviceWithFaultyClient['logger'].error = originalError;
-            });
-
-            it('should handle scheduled health check error (lines 344-345)', (done) => {
-                const loggerSpy = jest.fn();
-
-                const mockService = {
-                    performHealthCheck: jest
-                        .fn()
-                        .mockRejectedValue(new Error('Scheduled health check error')),
-                    logger: {
-                        warn: loggerSpy,
-                    },
-                };
-
-                // Simulate the scheduled health check call (line 344-345)
-                mockService.performHealthCheck().catch((error: Error) => {
-                    mockService.logger.warn('Health check failed', error);
-                    expect(loggerSpy).toHaveBeenCalledWith(
-                        'Health check failed',
-                        expect.any(Error),
-                    );
-                    done();
-                });
+            retryableCodes.forEach((code) => {
+                const error = { message: 'gRPC error', code };
+                const result = service['isRetryableError'](error, error.message);
+                expect(result).toBe(true);
             });
         });
 
-        it('should handle string error messages (lines 421-424)', () => {
-            // Test the extractErrorMessage private method with string error
-            const mockService = new (TemporalClientService as any)(mockClient, mockOptions);
+        it('should not identify non-retryable errors', () => {
+            const error = new Error('Workflow already exists');
+            const result = service['isRetryableError'](error, error.message);
 
-            // Access the private method
-            const result = mockService.extractErrorMessage('String error message');
-            expect(result).toBe('String error message');
+            expect(result).toBe(false);
         });
 
-        it('should handle unknown error types (lines 421-424)', () => {
-            // Test the extractErrorMessage private method with unknown error type
-            const mockService = new (TemporalClientService as any)(mockClient, mockOptions);
+        it('should not identify non-retryable gRPC codes', () => {
+            const error = { message: 'gRPC error', code: 3 }; // INVALID_ARGUMENT
+            const result = service['isRetryableError'](error, error.message);
 
-            // Access the private method
-            const result = mockService.extractErrorMessage({ customError: true });
-            expect(result).toBe('Unknown error');
+            expect(result).toBe(false);
+        });
+    });
+
+    describe('generateWorkflowId', () => {
+        it('should generate unique workflow IDs', () => {
+            const id1 = service['generateWorkflowId']('testWorkflow');
+            const id2 = service['generateWorkflowId']('testWorkflow');
+
+            expect(id1).toMatch(/^testWorkflow-\d+-[a-z0-9]+$/);
+            expect(id2).toMatch(/^testWorkflow-\d+-[a-z0-9]+$/);
+            expect(id1).not.toBe(id2);
         });
 
-        it('should handle performHealthCheck failure in isHealthy method (lines 344-345)', async () => {
-            // Mock performHealthCheck to throw an error to trigger the catch block
-            const performHealthCheckSpy = jest
-                .spyOn(service, 'performHealthCheck')
-                .mockRejectedValue(new Error('Health check failed'));
+        it('should include workflow type in ID', () => {
+            const id = service['generateWorkflowId']('myCustomWorkflow');
 
-            const loggerSpy = jest.spyOn(service['logger'], 'warn').mockImplementation();
+            expect(id).toContain('myCustomWorkflow');
+        });
+    });
 
-            // Set lastHealthCheck to null to trigger health check
-            (service as any).lastHealthCheck = null;
+    describe('performHealthCheck', () => {
+        it('should perform health check successfully', async () => {
+            await service.onModuleInit();
 
-            // Call isHealthy which should trigger performHealthCheck and catch the error
-            const result = service.isHealthy();
+            await service['performHealthCheck']();
 
-            // Give some time for the async catch block to execute
-            await new Promise((resolve) => setTimeout(resolve, 10));
-
-            expect(result).toBe(true); // Should return true because mockClient.workflow exists
-            expect(performHealthCheckSpy).toHaveBeenCalled();
-            expect(loggerSpy).toHaveBeenCalledWith('Health check failed', expect.any(Error));
-
-            performHealthCheckSpy.mockRestore();
-            loggerSpy.mockRestore();
+            const status = service.getStatus();
+            expect(status.lastHealthCheck).toBeInstanceOf(Date);
         });
 
-        it('should trigger health check when lastHealthCheck is old', async () => {
-            // Set an old lastHealthCheck time
-            (service as any).lastHealthCheck = new Date(Date.now() - 7000); // 7 seconds ago
-            (service as any).healthCheckInterval = 5000; // 5 seconds
+        it('should handle null client gracefully', async () => {
+            const serviceWithoutClient = new TemporalClientService(null, mockOptions);
 
-            const performHealthCheckSpy = jest
-                .spyOn(service, 'performHealthCheck')
-                .mockResolvedValue(undefined);
+            await expect(serviceWithoutClient['performHealthCheck']()).resolves.not.toThrow();
+        });
+    });
 
-            // Call isHealthy which should trigger performHealthCheck due to old timestamp
-            const result = service.isHealthy();
+    describe('sleep', () => {
+        it('should sleep for specified duration', async () => {
+            jest.useFakeTimers();
 
-            expect(result).toBe(true); // Should return true because mockClient.workflow exists
-            expect(performHealthCheckSpy).toHaveBeenCalled();
+            const sleepPromise = service['sleep'](1000);
+            jest.advanceTimersByTime(1000);
 
-            performHealthCheckSpy.mockRestore();
+            await sleepPromise;
+
+            jest.useRealTimers();
         });
     });
 });

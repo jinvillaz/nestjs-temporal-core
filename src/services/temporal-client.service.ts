@@ -1,7 +1,13 @@
 import { Injectable, OnModuleInit, Inject } from '@nestjs/common';
-import { Client, WorkflowHandle, WorkflowClient } from '@temporalio/client';
+import { Client, WorkflowHandle } from '@temporalio/client';
 import { TEMPORAL_CLIENT, TEMPORAL_MODULE_OPTIONS } from '../constants';
-import { TemporalOptions, WorkflowStartOptions } from '../interfaces';
+import {
+    TemporalOptions,
+    WorkflowStartOptions,
+    WorkflowHandleWithMetadata,
+    ClientServiceStatus,
+    ClientHealthStatus,
+} from '../interfaces';
 import { createLogger, TemporalLogger } from '../utils/logger';
 
 /**
@@ -67,50 +73,72 @@ export class TemporalClientService implements OnModuleInit {
         }
     }
 
-    // ==========================================
-    // Workflow Operations
-    // ==========================================
-
     /**
      * Start a new workflow execution
      */
     async startWorkflow(
         workflowType: string,
         args: unknown[] = [],
-        options?: WorkflowStartOptions & { signal?: { name: string; args?: unknown[] } },
-    ): Promise<any> {
+        options?: WorkflowStartOptions,
+    ): Promise<WorkflowHandleWithMetadata> {
         this.ensureClientAvailable();
 
         const workflowId = options?.workflowId || this.generateWorkflowId(workflowType);
         const taskQueue = options?.taskQueue || this.options.taskQueue || 'default';
 
-        try {
-            const handle = await this.client!.workflow.start(workflowType, {
-                workflowId,
-                taskQueue,
-                args,
-                searchAttributes: options?.searchAttributes as any,
-                memo: options?.memo,
-            } as any);
+        // Retry configuration for gRPC connection issues
+        const maxRetries = 3;
+        const baseRetryDelay = 1000; // Base delay in milliseconds
 
-            // Send initial signal if provided
-            if (options?.signal?.name) {
-                if (options.signal.args && options.signal.args.length > 0) {
-                    await (handle as any).signal(options.signal.name, ...options.signal.args);
-                } else {
-                    await (handle as any).signal(options.signal.name);
+        for (let attempt = 1; attempt <= maxRetries; attempt++) {
+            try {
+                // Perform health check before attempting workflow start (except for first attempt)
+                if (attempt > 1) {
+                    this.logger.debug(`Performing health check before retry attempt ${attempt}`);
+                    await this.performHealthCheck();
                 }
-            }
 
-            this.logger.info(
-                `Started workflow: ${workflowType} [${workflowId}] on queue: ${taskQueue}`,
-            );
-            return { ...(handle as any), handle };
-        } catch (error) {
-            const message = this.extractErrorMessage(error);
-            this.logger.error(`Failed to start workflow '${workflowType}': ${message}`, error);
-            throw new Error(`Failed to start workflow '${workflowType}': ${message}`);
+                this.logger.debug(`Starting workflow '${workflowType}' with ID: ${workflowId}`);
+
+                // Use our existing client
+                const handle = await this.client!.workflow.start(workflowType, {
+                    workflowId,
+                    taskQueue,
+                    args,
+                });
+
+                this.logger.info(
+                    `Started workflow: ${workflowType} [${workflowId}] on queue: ${taskQueue}`,
+                );
+                return { ...handle, handle };
+            } catch (error) {
+                const message = this.extractErrorMessage(error);
+
+                // Check if this is a gRPC connection error that we should retry
+                const isRetryableError = this.isRetryableError(error, message);
+
+                if (isRetryableError && attempt < maxRetries) {
+                    // Exponential backoff: 1s, 2s, 4s
+                    const retryDelay = baseRetryDelay * Math.pow(2, attempt - 1);
+                    this.logger.warn(
+                        `Attempt ${attempt}/${maxRetries} failed for workflow '${workflowType}': ${message}. Retrying in ${retryDelay}ms...`,
+                    );
+                    this.logger.debug(`Error details for retry decision:`, error);
+                    await this.sleep(retryDelay);
+                    continue;
+                }
+
+                this.logger.error(`Failed to start workflow '${workflowType}': ${message}`);
+                this.logger.error('Full error object:', error);
+                this.logger.debug(
+                    `Error details - Workflow: ${workflowType}, ID: ${workflowId}, Queue: ${taskQueue}, Retryable: ${isRetryableError}, Attempt: ${attempt}`,
+                );
+                throw new Error(`Failed to start workflow '${workflowType}': ${message}`);
+            }
         }
+
+        // This should never be reached due to the throw in the catch block
+        throw new Error(`Failed to start workflow '${workflowType}' after ${maxRetries} attempts`);
     }
 
     /**
@@ -124,7 +152,7 @@ export class TemporalClientService implements OnModuleInit {
             this.logger.debug(
                 `Retrieved workflow handle: ${workflowId}${runId ? ` (run: ${runId})` : ''}`,
             );
-            return handle as any;
+            return handle;
         } catch (error) {
             const message = this.extractErrorMessage(error);
             this.logger.error(`Failed to get workflow handle for ${workflowId}: ${message}`, error);
@@ -138,7 +166,7 @@ export class TemporalClientService implements OnModuleInit {
     async terminateWorkflow(workflowId: string, reason?: string, runId?: string): Promise<void> {
         try {
             const handle = await this.getWorkflowHandle(workflowId, runId);
-            await (handle as any).terminate(reason);
+            await handle.terminate(reason);
 
             this.logger.info(`Terminated workflow: ${workflowId}${reason ? ` (${reason})` : ''}`);
         } catch (error) {
@@ -154,7 +182,7 @@ export class TemporalClientService implements OnModuleInit {
     async cancelWorkflow(workflowId: string, runId?: string): Promise<void> {
         try {
             const handle = await this.getWorkflowHandle(workflowId, runId);
-            await (handle as any).cancel();
+            await handle.cancel();
 
             this.logger.info(`Cancelled workflow: ${workflowId}`);
         } catch (error) {
@@ -163,10 +191,6 @@ export class TemporalClientService implements OnModuleInit {
             throw new Error(`Failed to cancel workflow ${workflowId}: ${message}`);
         }
     }
-
-    // ==========================================
-    // Signal Operations
-    // ==========================================
 
     /**
      * Send a signal to a workflow
@@ -179,7 +203,7 @@ export class TemporalClientService implements OnModuleInit {
     ): Promise<void> {
         try {
             const handle = await this.getWorkflowHandle(workflowId, runId);
-            await (handle as any).signal(signalName, ...(args || []));
+            await handle.signal(signalName, ...(args || []));
 
             this.logger.debug(`Sent signal '${signalName}' to workflow: ${workflowId}`);
         } catch (error) {
@@ -203,7 +227,7 @@ export class TemporalClientService implements OnModuleInit {
         args?: unknown[],
     ): Promise<void> {
         try {
-            await (handle as any).signal(signalName, ...(args || []));
+            await handle.signal(signalName, ...(args || []));
             this.logger.debug(`Sent signal '${signalName}' to workflow handle`);
         } catch (error) {
             this.logger.error(
@@ -214,14 +238,10 @@ export class TemporalClientService implements OnModuleInit {
         }
     }
 
-    // ==========================================
-    // Query Operations
-    // ==========================================
-
     /**
      * Query a workflow for its current state
      */
-    async queryWorkflow<T = any>(
+    async queryWorkflow<T = unknown>(
         workflowId: string,
         queryName: string,
         args?: unknown[],
@@ -229,7 +249,7 @@ export class TemporalClientService implements OnModuleInit {
     ): Promise<T> {
         try {
             const handle = await this.getWorkflowHandle(workflowId, runId);
-            const result = await (handle as any).query(queryName, ...(args || []));
+            const result = await handle.query(queryName, ...(args || []));
 
             this.logger.debug(`Queried '${queryName}' from workflow: ${workflowId}`);
             return result as T;
@@ -246,13 +266,13 @@ export class TemporalClientService implements OnModuleInit {
     /**
      * Query a workflow using handle
      */
-    async queryWorkflowHandle<T = any>(
+    async queryWorkflowHandle<T = unknown>(
         handle: WorkflowHandle,
         queryName: string,
         args?: unknown[],
     ): Promise<T> {
         try {
-            const result = await (handle as any).query(queryName, ...(args || []));
+            const result = await handle.query(queryName, ...(args || []));
             this.logger.debug(`Queried '${queryName}' from workflow handle`);
             return result as T;
         } catch (error) {
@@ -264,17 +284,13 @@ export class TemporalClientService implements OnModuleInit {
         }
     }
 
-    // ==========================================
-    // Workflow Result Operations
-    // ==========================================
-
     /**
      * Wait for workflow completion and get result
      */
-    async getWorkflowResult<T = any>(workflowId: string, runId?: string): Promise<T> {
+    async getWorkflowResult<T = unknown>(workflowId: string, runId?: string): Promise<T> {
         try {
             const handle = await this.getWorkflowHandle(workflowId, runId);
-            const result = await (handle as any).result();
+            const result = await handle.result();
 
             this.logger.debug(`Retrieved result from workflow: ${workflowId}`);
             return result as T;
@@ -286,45 +302,6 @@ export class TemporalClientService implements OnModuleInit {
             throw error;
         }
     }
-
-    /**
-     * Describe workflow execution
-     */
-    async describeWorkflow(workflowId: string, runId?: string) {
-        try {
-            const handle = await this.getWorkflowHandle(workflowId, runId);
-            const description = await (handle as any).describe();
-
-            this.logger.debug(`Retrieved description for workflow: ${workflowId}`);
-            return description;
-        } catch (error) {
-            const message = this.extractErrorMessage(error);
-            this.logger.error(`Failed to describe workflow ${workflowId}: ${message}`, error);
-            throw new Error(`Failed to describe workflow ${workflowId}: ${message}`);
-        }
-    }
-
-    // ==========================================
-    // Listing and Client Access
-    // ==========================================
-
-    listWorkflows(query: string, pageSize = 100): unknown {
-        this.ensureClientAvailable();
-        try {
-            return (this.client as any).workflow.list({ query, pageSize });
-        } catch (error) {
-            const message = this.extractErrorMessage(error);
-            throw new Error(`Failed to list workflows with query '${query}': ${message}`);
-        }
-    }
-
-    getWorkflowClient(): WorkflowClient | null {
-        return (this.client && (this.client as any).workflow) || null;
-    }
-
-    // ==========================================
-    // Health and Status
-    // ==========================================
 
     /**
      * Check if client is available and healthy
@@ -346,20 +323,20 @@ export class TemporalClientService implements OnModuleInit {
             });
         }
 
-        return Boolean((this.client as any).workflow);
+        return Boolean(this.client.workflow);
     }
 
     /**
      * Get client health status
      */
-    getHealth(): { status: 'healthy' | 'unhealthy' | 'degraded' } {
+    getHealth(): ClientHealthStatus {
         return { status: this.isHealthy() ? 'healthy' : 'unhealthy' };
     }
 
     /**
      * Get client status for monitoring
      */
-    getStatus() {
+    getStatus(): ClientServiceStatus {
         return {
             available: this.client !== null,
             healthy: this.isHealthy(),
@@ -385,22 +362,19 @@ export class TemporalClientService implements OnModuleInit {
         }
 
         try {
-            // Simple health check - try to access workflow property
-            const hasWorkflow = Boolean((this.client as any).workflow);
-            if (hasWorkflow) {
-                this.lastHealthCheck = new Date();
-                this.logger.debug('Client health check passed');
-            } else {
-                this.logger.warn('Client health check failed - workflow property not available');
+            // Simplified health check - just check if client exists
+            // More detailed health checks can be done via actual workflow operations
+            if (!this.client) {
+                throw new Error('Client is not initialized');
             }
+
+            this.lastHealthCheck = new Date();
+            this.logger.debug('Client health check passed');
         } catch (error) {
             this.logger.warn('Client health check failed', error);
+            throw error; // Re-throw to indicate health check failure
         }
     }
-
-    // ==========================================
-    // Private Helper Methods
-    // ==========================================
 
     private ensureClientAvailable(): void {
         if (!this.client) {
@@ -422,5 +396,45 @@ export class TemporalClientService implements OnModuleInit {
             return error;
         }
         return 'Unknown error';
+    }
+
+    private isRetryableError(error: unknown, message: string): boolean {
+        // Check common gRPC connection error patterns
+        const gRpcErrorPatterns = [
+            'Unexpected error while making gRPC request',
+            'connection error',
+            'UNAVAILABLE',
+            'DEADLINE_EXCEEDED',
+            'RESOURCE_EXHAUSTED',
+            'INTERNAL',
+            'Service unavailable',
+            'Connection refused',
+            'Network error',
+            'timeout',
+            'ECONNRESET',
+            'ECONNREFUSED',
+            'ETIMEDOUT',
+        ];
+
+        // Check if the error message contains any retryable patterns
+        const messageMatch = gRpcErrorPatterns.some((pattern) =>
+            message.toLowerCase().includes(pattern.toLowerCase()),
+        );
+
+        // Check if it's a specific gRPC error type
+        if (error && typeof error === 'object' && 'code' in error) {
+            const grpcCode = (error as { code: unknown }).code;
+            // gRPC status codes that are retryable
+            const retryableGrpcCodes = [1, 2, 4, 8, 10, 13, 14]; // CANCELLED, UNKNOWN, DEADLINE_EXCEEDED, RESOURCE_EXHAUSTED, ABORTED, INTERNAL, UNAVAILABLE
+            if (typeof grpcCode === 'number' && retryableGrpcCodes.includes(grpcCode)) {
+                return true;
+            }
+        }
+
+        return messageMatch;
+    }
+
+    private async sleep(ms: number): Promise<void> {
+        return new Promise((resolve) => setTimeout(resolve, ms));
     }
 }

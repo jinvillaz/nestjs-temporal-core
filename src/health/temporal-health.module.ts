@@ -23,14 +23,6 @@ import { TemporalHealthController } from './temporal-health.controller';
  *
  * This will add the following endpoints:
  * - GET /temporal/health - Overall system health
- * - GET /temporal/health/system - Detailed system status
- * - GET /temporal/health/client - Client health check
- * - GET /temporal/health/worker - Worker health check
- * - GET /temporal/health/discovery - Discovery service health
- * - GET /temporal/health/schedules - Schedule service health
- * - GET /temporal/health/live - Liveness probe
- * - GET /temporal/health/ready - Readiness probe
- * - GET /temporal/health/startup - Startup probe
  */
 @Module({
     controllers: [TemporalHealthController],

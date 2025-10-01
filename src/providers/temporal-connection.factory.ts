@@ -1,5 +1,5 @@
 import { Injectable, OnModuleDestroy } from '@nestjs/common';
-import { Client } from '@temporalio/client';
+import { Client, Connection } from '@temporalio/client';
 import { NativeConnection } from '@temporalio/worker';
 import { TemporalOptions } from '../interfaces';
 import { createLogger, LoggerUtils, TemporalLogger } from '../utils/logger';
@@ -161,30 +161,24 @@ export class TemporalConnectionFactory implements OnModuleDestroy {
                 `Creating new client connection to ${options.connection!.address} (attempt ${attempts + 1})`,
             );
 
-            const { Client } = await import('@temporalio/client');
-
-            const clientOptions: Record<string, unknown> = {
-                connection: {
-                    address: options.connection!.address,
-                    tls: options.connection!.tls,
-                    metadata: options.connection!.metadata,
-                },
-                namespace: options.connection!.namespace || 'default',
-            };
-
-            // Add API key authentication if provided
-            if (options.connection!.apiKey) {
-                this.logger.debug('Adding API key authentication to client options');
-                clientOptions.connection = {
-                    ...(clientOptions.connection as Record<string, unknown>),
+            // Create connection using Connection.lazy() which is more reliable
+            const connection = await Connection.lazy({
+                address: options.connection!.address,
+                tls: options.connection!.tls,
+                metadata: options.connection!.metadata,
+                ...(options.connection!.apiKey && {
                     metadata: {
                         ...(options.connection!.metadata || {}),
                         authorization: `Bearer ${options.connection!.apiKey}`,
                     },
-                };
-            }
+                }),
+            });
 
-            const client = new Client(clientOptions);
+            // Create client with the connection
+            const client = new Client({
+                connection,
+                namespace: options.connection!.namespace || 'default',
+            });
 
             // Cache the successful connection
             this.clientConnectionCache.set(connectionKey, client);
@@ -226,9 +220,13 @@ export class TemporalConnectionFactory implements OnModuleDestroy {
             const { NativeConnection } = await import('@temporalio/worker');
             const address = options.connection!.address;
 
-            const connectOptions: any = {
+            const connectOptions: {
+                address: string;
+                tls?: boolean | null;
+                metadata?: Record<string, string>;
+            } = {
                 address,
-                tls: options.connection!.tls,
+                tls: options.connection!.tls as boolean | null,
             };
 
             if (options.connection!.apiKey) {
@@ -256,7 +254,7 @@ export class TemporalConnectionFactory implements OnModuleDestroy {
     private isClientHealthy(client: Client): boolean {
         try {
             // Simple health check - verify the client has the workflow property
-            return Boolean((client as any).workflow);
+            return Boolean(client.workflow);
         } catch {
             return false;
         }
