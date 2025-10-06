@@ -932,9 +932,7 @@ describe('TemporalDiscoveryService', () => {
 
             // Mock the Map.set to throw a string error
             const originalSet = Map.prototype.set;
-            jest.spyOn(Map.prototype, 'set').mockImplementationOnce(function (
-                this: Map<any, any>,
-            ) {
+            jest.spyOn(Map.prototype, 'set').mockImplementationOnce(function (this: Map<any, any>) {
                 throw 'String error during set';
             });
 
@@ -966,6 +964,95 @@ describe('TemporalDiscoveryService', () => {
             expect(logSpy).toHaveBeenCalled();
             const status = service.getHealthStatus();
             expect(status.isComplete).toBe(true);
+
+            logSpy.mockRestore();
+        });
+
+        it('should handle non-Error wrapper processing exception in catch block lines 222-225', async () => {
+            const testInstance = new TestActivity();
+
+            discoveryService.getProviders.mockReturnValue([
+                { instance: testInstance, metatype: TestActivity },
+            ] as any);
+
+            // Mock processWrapper to throw a non-Error object
+            const originalProcessWrapper = service['processWrapper'];
+            jest.spyOn(service as any, 'processWrapper').mockImplementationOnce(() => {
+                throw { message: 'Non-error object' };
+            });
+
+            const logSpy = jest.spyOn(service['logger'], 'warn').mockImplementation();
+
+            await service.onModuleInit();
+
+            // Should handle the non-Error exception
+            expect(logSpy).toHaveBeenCalled();
+            const status = service.getHealthStatus();
+            expect(status.isComplete).toBe(true);
+
+            logSpy.mockRestore();
+        });
+
+        it('should hit unknown error branch in discoverComponents catch - lines 222-225', async () => {
+            const testInstance = new TestActivity();
+
+            discoveryService.getProviders.mockReturnValue([
+                { instance: testInstance, metatype: TestActivity },
+            ] as any);
+
+            // Mock to throw a non-Error exception (number, null, undefined, etc)
+            metadataAccessor.isActivity.mockImplementation(() => {
+                throw null; // Non-Error exception
+            });
+
+            const logSpy = jest.spyOn(service['logger'], 'warn').mockImplementation();
+
+            await service.onModuleInit();
+
+            // Should complete and log the error
+            expect(logSpy).toHaveBeenCalled();
+
+            logSpy.mockRestore();
+        });
+
+        it('should hit unknown error branch with number exception', async () => {
+            const testInstance = new TestActivity();
+
+            discoveryService.getProviders.mockReturnValue([
+                { instance: testInstance, metatype: TestActivity },
+            ] as any);
+
+            // Throw a number
+            metadataAccessor.isActivity.mockImplementation(() => {
+                throw 404;
+            });
+
+            const logSpy = jest.spyOn(service['logger'], 'warn').mockImplementation();
+
+            await service.onModuleInit();
+
+            expect(logSpy).toHaveBeenCalled();
+
+            logSpy.mockRestore();
+        });
+
+        it('should hit unknown error branch with undefined exception', async () => {
+            const testInstance = new TestActivity();
+
+            discoveryService.getProviders.mockReturnValue([
+                { instance: testInstance, metatype: TestActivity },
+            ] as any);
+
+            // Throw undefined
+            metadataAccessor.isActivity.mockImplementation(() => {
+                throw undefined;
+            });
+
+            const logSpy = jest.spyOn(service['logger'], 'warn').mockImplementation();
+
+            await service.onModuleInit();
+
+            expect(logSpy).toHaveBeenCalled();
 
             logSpy.mockRestore();
         });
