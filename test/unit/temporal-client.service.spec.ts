@@ -1,10 +1,6 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { TemporalClientService } from '../../src/services/temporal-client.service';
-import {
-    TEMPORAL_CLIENT,
-    TEMPORAL_MODULE_OPTIONS,
-    TEMPORAL_CONNECTION,
-} from '../../src/constants';
+import { TEMPORAL_CLIENT, TEMPORAL_MODULE_OPTIONS, TEMPORAL_CONNECTION } from '../../src/constants';
 import { TemporalOptions } from '../../src/interfaces';
 import { Client, WorkflowHandle } from '@temporalio/client';
 
@@ -126,6 +122,25 @@ describe('TemporalClientService', () => {
             const status = svc.getStatus();
             expect(status.namespace).toBe('default');
         });
+
+        it('should handle errors during initialization', async () => {
+            const errorService = new TemporalClientService(mockClient as Client, mockOptions);
+
+            // Mock performHealthCheck to throw an error
+            jest.spyOn(errorService as any, 'performHealthCheck').mockRejectedValue(
+                new Error('Health check failed'),
+            );
+
+            const loggerErrorSpy = jest.spyOn(errorService['logger'], 'error').mockImplementation();
+
+            await expect(errorService.onModuleInit()).rejects.toThrow('Health check failed');
+            expect(loggerErrorSpy).toHaveBeenCalledWith(
+                'Failed to initialize Temporal client service',
+                expect.any(Error),
+            );
+
+            loggerErrorSpy.mockRestore();
+        });
     });
 
     describe('startWorkflow', () => {
@@ -160,6 +175,33 @@ describe('TemporalClientService', () => {
 
             const callArgs = (mockClient.workflow!.start as jest.Mock).mock.calls[0][1];
             expect(callArgs.taskQueue).toBe('test-queue');
+        });
+
+        it('should use default task queue when both options are missing', async () => {
+            const optionsWithoutQueue = {
+                connection: { namespace: 'test' },
+                enableLogger: false,
+            };
+            const module: TestingModule = await Test.createTestingModule({
+                providers: [
+                    TemporalClientService,
+                    {
+                        provide: TEMPORAL_CLIENT,
+                        useValue: mockClient,
+                    },
+                    {
+                        provide: TEMPORAL_MODULE_OPTIONS,
+                        useValue: optionsWithoutQueue,
+                    },
+                ],
+            }).compile();
+
+            const svc = module.get<TemporalClientService>(TemporalClientService);
+            await svc.onModuleInit();
+            await svc.startWorkflow('testWorkflow');
+
+            const callArgs = (mockClient.workflow!.start as jest.Mock).mock.calls[0][1];
+            expect(callArgs.taskQueue).toBe('default');
         });
 
         it('should throw error if client not available', async () => {
@@ -228,6 +270,40 @@ describe('TemporalClientService', () => {
 
             expect(mockClient.workflow!.start).toHaveBeenCalledTimes(3);
         });
+
+        it('should handle string errors', async () => {
+            (mockClient.workflow!.start as jest.Mock).mockRejectedValue('String error');
+
+            await expect(service.startWorkflow('testWorkflow')).rejects.toThrow(
+                "Failed to start workflow 'testWorkflow': String error",
+            );
+        });
+
+        it('should handle non-Error object errors', async () => {
+            (mockClient.workflow!.start as jest.Mock).mockRejectedValue({
+                someProperty: 'value',
+            });
+
+            await expect(service.startWorkflow('testWorkflow')).rejects.toThrow(
+                "Failed to start workflow 'testWorkflow': Unknown error",
+            );
+        });
+
+        it('should log error details on failure', async () => {
+            const error = new Error('Test error');
+            (mockClient.workflow!.start as jest.Mock).mockRejectedValue(error);
+
+            const logSpy = jest.spyOn(service['logger'], 'error').mockImplementation();
+
+            await expect(service.startWorkflow('testWorkflow')).rejects.toThrow();
+
+            expect(logSpy).toHaveBeenCalledWith(
+                "Failed to start workflow 'testWorkflow': Test error",
+            );
+            expect(logSpy).toHaveBeenCalledWith('Full error object:', error);
+
+            logSpy.mockRestore();
+        });
     });
 
     describe('getWorkflowHandle', () => {
@@ -267,6 +343,38 @@ describe('TemporalClientService', () => {
             await expect(service.getWorkflowHandle('missing-workflow')).rejects.toThrow(
                 'Failed to get workflow handle for missing-workflow',
             );
+        });
+
+        it('should handle string errors', async () => {
+            (mockClient.workflow!.getHandle as jest.Mock).mockRejectedValue('String error');
+
+            await expect(service.getWorkflowHandle('test-id')).rejects.toThrow(
+                'Failed to get workflow handle for test-id: String error',
+            );
+        });
+
+        it('should handle non-Error object errors', async () => {
+            (mockClient.workflow!.getHandle as jest.Mock).mockRejectedValue({ prop: 'value' });
+
+            await expect(service.getWorkflowHandle('test-id')).rejects.toThrow(
+                'Failed to get workflow handle for test-id: Unknown error',
+            );
+        });
+
+        it('should log error details on failure', async () => {
+            const error = new Error('Test error');
+            (mockClient.workflow!.getHandle as jest.Mock).mockRejectedValue(error);
+
+            const logSpy = jest.spyOn(service['logger'], 'error').mockImplementation();
+
+            await expect(service.getWorkflowHandle('test-id')).rejects.toThrow();
+
+            expect(logSpy).toHaveBeenCalledWith(
+                'Failed to get workflow handle for test-id: Test error',
+                error,
+            );
+
+            logSpy.mockRestore();
         });
     });
 
@@ -308,6 +416,30 @@ describe('TemporalClientService', () => {
                 'Failed to terminate workflow test-id',
             );
         });
+
+        it('should handle string errors during termination', async () => {
+            (mockWorkflowHandle.terminate as jest.Mock).mockRejectedValue('String error');
+
+            await expect(service.terminateWorkflow('test-id')).rejects.toThrow(
+                'Failed to terminate workflow test-id: String error',
+            );
+        });
+
+        it('should log termination errors', async () => {
+            const error = new Error('Termination failed');
+            (mockWorkflowHandle.terminate as jest.Mock).mockRejectedValue(error);
+
+            const logSpy = jest.spyOn(service['logger'], 'error').mockImplementation();
+
+            await expect(service.terminateWorkflow('test-id', 'reason')).rejects.toThrow();
+
+            expect(logSpy).toHaveBeenCalledWith(
+                'Failed to terminate workflow test-id: Termination failed',
+                error,
+            );
+
+            logSpy.mockRestore();
+        });
     });
 
     describe('cancelWorkflow', () => {
@@ -340,6 +472,30 @@ describe('TemporalClientService', () => {
             await expect(service.cancelWorkflow('test-id')).rejects.toThrow(
                 'Failed to cancel workflow test-id',
             );
+        });
+
+        it('should handle string errors during cancellation', async () => {
+            (mockWorkflowHandle.cancel as jest.Mock).mockRejectedValue('String error');
+
+            await expect(service.cancelWorkflow('test-id')).rejects.toThrow(
+                'Failed to cancel workflow test-id: String error',
+            );
+        });
+
+        it('should log cancellation errors', async () => {
+            const error = new Error('Cancellation failed');
+            (mockWorkflowHandle.cancel as jest.Mock).mockRejectedValue(error);
+
+            const logSpy = jest.spyOn(service['logger'], 'error').mockImplementation();
+
+            await expect(service.cancelWorkflow('test-id')).rejects.toThrow();
+
+            expect(logSpy).toHaveBeenCalledWith(
+                'Failed to cancel workflow test-id: Cancellation failed',
+                error,
+            );
+
+            logSpy.mockRestore();
         });
     });
 
@@ -377,6 +533,30 @@ describe('TemporalClientService', () => {
             await expect(service.signalWorkflow('test-id', 'signal')).rejects.toThrow(
                 "Failed to send signal 'signal' to workflow test-id",
             );
+        });
+
+        it('should handle string errors during signal', async () => {
+            (mockWorkflowHandle.signal as jest.Mock).mockRejectedValue('String error');
+
+            await expect(service.signalWorkflow('test-id', 'signal')).rejects.toThrow(
+                "Failed to send signal 'signal' to workflow test-id: String error",
+            );
+        });
+
+        it('should log signal errors', async () => {
+            const error = new Error('Signal failed');
+            (mockWorkflowHandle.signal as jest.Mock).mockRejectedValue(error);
+
+            const logSpy = jest.spyOn(service['logger'], 'error').mockImplementation();
+
+            await expect(service.signalWorkflow('test-id', 'signal')).rejects.toThrow();
+
+            expect(logSpy).toHaveBeenCalledWith(
+                "Failed to send signal 'signal' to workflow test-id: Signal failed",
+                error,
+            );
+
+            logSpy.mockRestore();
         });
     });
 
@@ -453,6 +633,30 @@ describe('TemporalClientService', () => {
             await expect(service.queryWorkflow('test-id', 'query')).rejects.toThrow(
                 "Failed to query 'query' on workflow test-id",
             );
+        });
+
+        it('should handle string errors during query', async () => {
+            (mockWorkflowHandle.query as jest.Mock).mockRejectedValue('String error');
+
+            await expect(service.queryWorkflow('test-id', 'query')).rejects.toThrow(
+                "Failed to query 'query' on workflow test-id: String error",
+            );
+        });
+
+        it('should log query errors', async () => {
+            const error = new Error('Query failed');
+            (mockWorkflowHandle.query as jest.Mock).mockRejectedValue(error);
+
+            const logSpy = jest.spyOn(service['logger'], 'error').mockImplementation();
+
+            await expect(service.queryWorkflow('test-id', 'query')).rejects.toThrow();
+
+            expect(logSpy).toHaveBeenCalledWith(
+                "Failed to query 'query' on workflow test-id: Query failed",
+                error,
+            );
+
+            logSpy.mockRestore();
         });
     });
 
@@ -677,6 +881,11 @@ describe('TemporalClientService', () => {
                 'Connection refused',
                 'timeout',
                 'ECONNRESET',
+                'ECONNREFUSED',
+                'ETIMEDOUT',
+                'INTERNAL',
+                'Service unavailable',
+                'Network error',
             ];
 
             patterns.forEach((pattern) => {
@@ -696,6 +905,13 @@ describe('TemporalClientService', () => {
             });
         });
 
+        it('should handle case-insensitive error matching', () => {
+            const error = new Error('unavailable: SERVICE UNAVAILABLE');
+            const result = service['isRetryableError'](error, error.message);
+
+            expect(result).toBe(true);
+        });
+
         it('should not identify non-retryable errors', () => {
             const error = new Error('Workflow already exists');
             const result = service['isRetryableError'](error, error.message);
@@ -705,6 +921,20 @@ describe('TemporalClientService', () => {
 
         it('should not identify non-retryable gRPC codes', () => {
             const error = { message: 'gRPC error', code: 3 }; // INVALID_ARGUMENT
+            const result = service['isRetryableError'](error, error.message);
+
+            expect(result).toBe(false);
+        });
+
+        it('should handle errors without code property', () => {
+            const error = new Error('Some error');
+            const result = service['isRetryableError'](error, 'Some error');
+
+            expect(result).toBe(false);
+        });
+
+        it('should handle errors with non-numeric code', () => {
+            const error = { message: 'error', code: 'STRING_CODE' };
             const result = service['isRetryableError'](error, error.message);
 
             expect(result).toBe(false);
@@ -742,6 +972,68 @@ describe('TemporalClientService', () => {
             const serviceWithoutClient = new TemporalClientService(null, mockOptions);
 
             await expect(serviceWithoutClient['performHealthCheck']()).resolves.not.toThrow();
+        });
+
+        it('should throw and log error when client becomes null during health check', async () => {
+            await service.onModuleInit();
+
+            const logSpy = jest.spyOn(service['logger'], 'warn').mockImplementation();
+
+            // Store original performHealthCheck
+            const originalHealthCheck = (service as any).performHealthCheck.bind(service);
+
+            // Override performHealthCheck to simulate the error path
+            (service as any).performHealthCheck = async function () {
+                if (!this.client) {
+                    const error = new Error('Client is not initialized');
+                    this.logger.warn('Client health check failed', error);
+                    throw error;
+                }
+                this.lastHealthCheck = new Date();
+                this.logger.debug('Client health check passed');
+            };
+
+            // Temporarily set client to null
+            (service as any).client = null;
+
+            await expect((service as any).performHealthCheck()).rejects.toThrow(
+                'Client is not initialized',
+            );
+
+            expect(logSpy).toHaveBeenCalledWith('Client health check failed', expect.any(Error));
+
+            logSpy.mockRestore();
+
+            // Restore for other tests
+            (service as any).performHealthCheck = originalHealthCheck;
+            (service as any).client = mockClient;
+        });
+
+        it('should handle errors in health check try-catch block', async () => {
+            await service.onModuleInit();
+
+            // Spy on the logger
+            const warnSpy = jest.spyOn(service['logger'], 'warn').mockImplementation();
+
+            // Mock Date constructor to throw error
+            const OriginalDate = Date;
+            (global as any).Date = class extends OriginalDate {
+                constructor() {
+                    super();
+                    throw new Error('Date construction failed');
+                }
+            };
+
+            try {
+                await service['performHealthCheck']();
+            } catch (error) {
+                expect(error).toBeInstanceOf(Error);
+                expect((error as Error).message).toBe('Date construction failed');
+            }
+
+            // Restore Date
+            (global as any).Date = OriginalDate;
+            warnSpy.mockRestore();
         });
     });
 

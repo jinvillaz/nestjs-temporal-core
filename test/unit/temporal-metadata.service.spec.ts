@@ -1001,6 +1001,89 @@ describe('TemporalMetadataAccessor', () => {
 
             // Should handle the error gracefully
             expect(result.errors.length).toBeGreaterThanOrEqual(0);
+            expect(result.errors[0].error).toBe('Property access error');
+        });
+
+        it('should handle non-Error in method extraction loop line 262', () => {
+            class ErrorClass {
+                get errorMethod() {
+                    throw { code: 'PROPERTY_ERROR', message: 'Non-Error thrown' };
+                }
+            }
+
+            Reflect.defineMetadata(TEMPORAL_ACTIVITY, {}, ErrorClass);
+            Reflect.defineMetadata(
+                TEMPORAL_ACTIVITY_METHOD,
+                {
+                    errorMethod: { name: 'error' },
+                },
+                ErrorClass.prototype,
+            );
+
+            const instance = new ErrorClass();
+            const result = service.extractActivityMethods(instance);
+
+            // Should handle the error gracefully with 'Unknown error' message
+            expect(result.errors.length).toBeGreaterThanOrEqual(0);
+            expect(result.errors[0].error).toBe('Unknown error');
+        });
+
+        it('should handle Error in fallback method extraction line 304', () => {
+            class ErrorClass {
+                testMethod() {}
+            }
+
+            const instance = new ErrorClass();
+            const prototype = ErrorClass.prototype;
+
+            // Don't set collection metadata, force fallback path
+            // Mock Reflect.getMetadata to return null for collection, but throw Error for property
+            const originalGetMetadata = Reflect.getMetadata;
+            let callCount = 0;
+            Reflect.getMetadata = jest.fn().mockImplementation((key, target, propertyKey) => {
+                callCount++;
+                if (callCount === 1) {
+                    // First call for collection metadata - return null to force fallback
+                    return null;
+                }
+                // Subsequent calls for individual properties - throw Error
+                throw new Error('Metadata access failed');
+            });
+
+            const result = service.extractActivityMethods(instance);
+
+            expect(result.errors.length).toBeGreaterThan(0);
+            expect(result.errors.some((e) => e.error === 'Metadata access failed')).toBe(true);
+
+            Reflect.getMetadata = originalGetMetadata;
+        });
+
+        it('should handle non-Error in fallback method extraction line 304', () => {
+            class ErrorClass {
+                testMethod() {}
+            }
+
+            const instance = new ErrorClass();
+
+            // Mock Reflect.getMetadata to return null for collection, but throw non-Error for property
+            const originalGetMetadata = Reflect.getMetadata;
+            let callCount = 0;
+            Reflect.getMetadata = jest.fn().mockImplementation((key, target, propertyKey) => {
+                callCount++;
+                if (callCount === 1) {
+                    // First call for collection metadata - return null to force fallback
+                    return null;
+                }
+                // Subsequent calls for individual properties - throw non-Error
+                throw { code: 'META_ERROR' };
+            });
+
+            const result = service.extractActivityMethods(instance);
+
+            expect(result.errors.length).toBeGreaterThan(0);
+            expect(result.errors.some((e) => e.error === 'Unknown error')).toBe(true);
+
+            Reflect.getMetadata = originalGetMetadata;
         });
 
         it('should handle getActivityMethodOptions with no methodName', () => {
@@ -1131,6 +1214,22 @@ describe('TemporalMetadataAccessor', () => {
 
             expect(result.success).toBe(false);
             expect(result.errors.length).toBeGreaterThan(0);
+            expect(result.errors[0].error).toBe('Unknown error');
+
+            jest.restoreAllMocks();
+        });
+
+        it('should handle getSignalMethods with Error exception line 505-507', () => {
+            // Mock getMetadata to throw an Error
+            jest.spyOn(Reflect, 'getMetadata').mockImplementationOnce(() => {
+                throw new Error('Signal metadata error');
+            });
+
+            const result = service.getSignalMethods(MockActivityClass.prototype);
+
+            expect(result.success).toBe(false);
+            expect(result.errors.length).toBeGreaterThan(0);
+            expect(result.errors[0].error).toBe('Signal metadata error');
 
             jest.restoreAllMocks();
         });
@@ -1145,6 +1244,22 @@ describe('TemporalMetadataAccessor', () => {
 
             expect(result.success).toBe(false);
             expect(result.errors.length).toBeGreaterThan(0);
+            expect(result.errors[0].error).toBe('Unknown error');
+
+            jest.restoreAllMocks();
+        });
+
+        it('should handle getQueryMethods with Error exception line 537-541', () => {
+            // Mock getMetadata to throw an Error
+            jest.spyOn(Reflect, 'getMetadata').mockImplementationOnce(() => {
+                throw new Error('Query metadata error');
+            });
+
+            const result = service.getQueryMethods(MockActivityClass.prototype);
+
+            expect(result.success).toBe(false);
+            expect(result.errors.length).toBeGreaterThan(0);
+            expect(result.errors[0].error).toBe('Query metadata error');
 
             jest.restoreAllMocks();
         });
@@ -1161,6 +1276,118 @@ describe('TemporalMetadataAccessor', () => {
             expect(result.errors.length).toBeGreaterThan(0);
 
             jest.restoreAllMocks();
+        });
+
+        it('should handle extractActivityMethods with cached object entry line 207-211', () => {
+            const instance = new MockActivityClass();
+            const constructor = MockActivityClass;
+
+            // Pre-populate cache with object entry (not function)
+            const cachedMethodObject = {
+                name: 'testMethod',
+                originalName: 'testMethod',
+                methodName: 'testMethod',
+                className: 'MockActivityClass',
+                handler: jest.fn(),
+            };
+
+            (service as any).activityMethodCache.set(
+                constructor,
+                new Map([['testMethod', cachedMethodObject]]),
+            );
+
+            const result = service.extractActivityMethods(instance);
+
+            expect(result.success).toBe(true);
+            expect(result.methods.has('testMethod')).toBe(true);
+        });
+
+        it('should cache methods after extraction line 307-309', () => {
+            const instance = new MockActivityClass();
+
+            // Ensure cache is empty
+            service.clearCache();
+
+            const constructor = MockActivityClass;
+            expect((service as any).activityMethodCache.has(constructor)).toBe(false);
+
+            // Extract methods
+            service.extractActivityMethods(instance);
+
+            // Verify cache was populated
+            expect((service as any).activityMethodCache.has(constructor)).toBe(true);
+        });
+
+        it('should handle hasActivityMethods with Reflect.hasMetadata throwing line 537-541', () => {
+            class TestClass {
+                testMethod() {}
+            }
+
+            const prototype = TestClass.prototype;
+
+            // Mock Reflect.hasMetadata to throw for specific property
+            const originalHasMetadata = Reflect.hasMetadata;
+            let callCount = 0;
+            Reflect.hasMetadata = jest.fn().mockImplementation((key, target, propertyKey) => {
+                callCount++;
+                if (callCount === 2) {
+                    // Throw on second property check
+                    throw new Error('Metadata check error');
+                }
+                return originalHasMetadata(key, target, propertyKey);
+            });
+
+            // This should catch the error and return false for that property
+            const result = (service as any).hasActivityMethods(prototype);
+
+            // Should not throw, handles error gracefully
+            expect(typeof result).toBe('boolean');
+
+            Reflect.hasMetadata = originalHasMetadata;
+        });
+
+        it('should handle getActivityInfo with catch block line 603-610', () => {
+            // Mock isActivity to throw during getActivityInfo
+            jest.spyOn(service, 'isActivity').mockImplementationOnce(() => {
+                throw new Error('Activity check error');
+            });
+
+            const result = service.getActivityInfo(MockActivityClass);
+
+            expect(result.className).toBe('Unknown');
+            expect(result.isActivity).toBe(false);
+            expect(result.activityName).toBeNull();
+            expect(result.methodNames).toEqual([]);
+            expect(result.metadata).toBeNull();
+            expect(result.activityOptions).toBeNull();
+            expect(result.methodCount).toBe(0);
+
+            jest.restoreAllMocks();
+        });
+
+        it('should validate activity class without warnings line 500', () => {
+            // Test when warnings.length === 0, so warnings should be undefined
+            // Use MockActivityClass which has 2 methods setup (between 1 and 50, no warnings)
+            const result = service.validateActivityClass(MockActivityClass);
+
+            expect(result.isValid).toBe(true);
+            expect(result.warnings).toBeUndefined(); // No warnings, so should be undefined
+            expect(result.methodCount).toBeGreaterThan(0);
+            expect(result.methodCount).toBeLessThanOrEqual(50);
+        });
+
+        it('should detect activity class with zero methods line 489', () => {
+            class EmptyActivityClass {}
+
+            Reflect.defineMetadata(TEMPORAL_ACTIVITY, { name: 'Empty' }, EmptyActivityClass);
+            // Don't add any activity methods
+
+            const result = service.validateActivityClass(EmptyActivityClass);
+
+            expect(result.isValid).toBe(false);
+            expect(result.warnings).toBeDefined();
+            expect(result.warnings).toContain('No activity methods found in class');
+            expect(result.methodCount).toBe(0);
         });
     });
 });

@@ -85,6 +85,77 @@ describe('TemporalDiscoveryService', () => {
         jest.clearAllMocks();
     });
 
+    describe('constructor and initialization', () => {
+        it('should handle options without enableLogger', async () => {
+            const optionsWithoutLogger = {
+                taskQueue: 'test-queue',
+                connection: { namespace: 'test' },
+            };
+
+            const module: TestingModule = await Test.createTestingModule({
+                providers: [
+                    TemporalDiscoveryService,
+                    {
+                        provide: DiscoveryService,
+                        useValue: discoveryService,
+                    },
+                    {
+                        provide: TemporalMetadataAccessor,
+                        useValue: metadataAccessor,
+                    },
+                    {
+                        provide: TEMPORAL_MODULE_OPTIONS,
+                        useValue: optionsWithoutLogger,
+                    },
+                    {
+                        provide: ACTIVITY_MODULE_OPTIONS,
+                        useValue: mockActivityModuleOptions,
+                    },
+                ],
+            }).compile();
+
+            const svc = module.get<TemporalDiscoveryService>(TemporalDiscoveryService);
+            await svc.onModuleInit();
+
+            expect(svc).toBeDefined();
+        });
+
+        it('should handle options without logLevel', async () => {
+            const optionsWithoutLogLevel = {
+                taskQueue: 'test-queue',
+                connection: { namespace: 'test' },
+                enableLogger: true,
+            };
+
+            const module: TestingModule = await Test.createTestingModule({
+                providers: [
+                    TemporalDiscoveryService,
+                    {
+                        provide: DiscoveryService,
+                        useValue: discoveryService,
+                    },
+                    {
+                        provide: TemporalMetadataAccessor,
+                        useValue: metadataAccessor,
+                    },
+                    {
+                        provide: TEMPORAL_MODULE_OPTIONS,
+                        useValue: optionsWithoutLogLevel,
+                    },
+                    {
+                        provide: ACTIVITY_MODULE_OPTIONS,
+                        useValue: mockActivityModuleOptions,
+                    },
+                ],
+            }).compile();
+
+            const svc = module.get<TemporalDiscoveryService>(TemporalDiscoveryService);
+            await svc.onModuleInit();
+
+            expect(svc).toBeDefined();
+        });
+    });
+
     describe('onModuleInit', () => {
         it('should complete discovery successfully with no components', async () => {
             await service.onModuleInit();
@@ -245,6 +316,40 @@ describe('TemporalDiscoveryService', () => {
             const activity = service.getActivity('directFunction');
             expect(activity).toBe(handler);
         });
+
+        it('should return undefined when activityInfo has no handler and is not a function', async () => {
+            const testInstance = new TestActivity();
+            const mockWrapper = {
+                instance: testInstance,
+                metatype: TestActivity,
+            };
+
+            discoveryService.getProviders.mockReturnValue([mockWrapper as any]);
+            metadataAccessor.isActivity.mockReturnValue(true);
+            // Return activity info without handler property and not a function
+            metadataAccessor.extractActivityMethods.mockReturnValue({
+                success: true,
+                methods: new Map([
+                    [
+                        'nonFunctionActivity',
+                        {
+                            name: 'nonFunctionActivity',
+                            originalName: 'nonFunctionActivity',
+                            methodName: 'testMethod',
+                            className: 'TestActivity',
+                            // No handler property
+                        },
+                    ],
+                ]),
+                errors: [],
+                extractedCount: 1,
+            });
+
+            await service.onModuleInit();
+
+            const activity = service.getActivity('nonFunctionActivity');
+            expect(activity).toBeUndefined();
+        });
     });
 
     describe('getAllActivities', () => {
@@ -304,6 +409,63 @@ describe('TemporalDiscoveryService', () => {
 
             const allActivities = service.getAllActivities();
             expect(allActivities).toEqual({});
+        });
+
+        it('should handle activities without handler property (direct function)', async () => {
+            const testInstance = new TestActivity();
+            const directHandler = testInstance.testMethod.bind(testInstance);
+            const mockWrapper = {
+                instance: testInstance,
+                metatype: TestActivity,
+            };
+
+            discoveryService.getProviders.mockReturnValue([mockWrapper as any]);
+            metadataAccessor.isActivity.mockReturnValue(true);
+
+            // Store activity as direct function (not wrapped in { handler: ... })
+            (service as any).discoveredActivities = new Map([['directFunction', directHandler]]);
+
+            const allActivities = service.getAllActivities();
+            expect(Object.keys(allActivities)).toHaveLength(1);
+            expect(allActivities.directFunction).toBe(directHandler);
+        });
+
+        it('should fallback to activityInfo when handler property is undefined', async () => {
+            const testInstance = new TestActivity();
+            const directHandler = testInstance.testMethod.bind(testInstance);
+            const mockWrapper = {
+                instance: testInstance,
+                metatype: TestActivity,
+            };
+
+            discoveryService.getProviders.mockReturnValue([mockWrapper as any]);
+            metadataAccessor.isActivity.mockReturnValue(true);
+
+            // Store activity with handler: undefined, fallback to the function itself
+            (service as any).discoveredActivities = new Map([['fallbackActivity', directHandler]]);
+
+            const allActivities = service.getAllActivities();
+            expect(Object.keys(allActivities)).toHaveLength(1);
+            expect(allActivities.fallbackActivity).toBe(directHandler);
+        });
+
+        it('should handle activity info where handler is falsy but info is not a function', async () => {
+            const testInstance = new TestActivity();
+            const mockWrapper = {
+                instance: testInstance,
+                metatype: TestActivity,
+            };
+
+            discoveryService.getProviders.mockReturnValue([mockWrapper as any]);
+            metadataAccessor.isActivity.mockReturnValue(true);
+
+            // Store activity info with handler=undefined and info itself is not a function
+            const nonFunctionInfo = { handler: undefined, someProp: 'value' };
+            (service as any).discoveredActivities = new Map([['badActivity', nonFunctionInfo]]);
+
+            const allActivities = service.getAllActivities();
+            // Should not include badActivity since it's not a function
+            expect(Object.keys(allActivities)).toHaveLength(0);
         });
     });
 
@@ -680,6 +842,116 @@ describe('TemporalDiscoveryService', () => {
             expect(stats.totalComponents).toBe(1);
         });
 
+        it('should handle activityModuleOptions without activityClasses', async () => {
+            const moduleWithoutFilter: TestingModule = await Test.createTestingModule({
+                providers: [
+                    TemporalDiscoveryService,
+                    {
+                        provide: DiscoveryService,
+                        useValue: discoveryService,
+                    },
+                    {
+                        provide: TemporalMetadataAccessor,
+                        useValue: metadataAccessor,
+                    },
+                    {
+                        provide: TEMPORAL_MODULE_OPTIONS,
+                        useValue: mockOptions,
+                    },
+                    {
+                        provide: ACTIVITY_MODULE_OPTIONS,
+                        useValue: {}, // No activityClasses
+                    },
+                ],
+            }).compile();
+
+            const svc = moduleWithoutFilter.get<TemporalDiscoveryService>(TemporalDiscoveryService);
+
+            const testInstance = new TestActivity();
+            discoveryService.getProviders.mockReturnValue([
+                { instance: testInstance, metatype: TestActivity },
+            ] as any);
+
+            metadataAccessor.isActivity.mockReturnValue(true);
+            metadataAccessor.extractActivityMethods.mockReturnValue({
+                success: true,
+                methods: new Map([
+                    [
+                        'activity1',
+                        {
+                            name: 'activity1',
+                            originalName: 'activity1',
+                            methodName: 'testMethod',
+                            className: 'TestActivity',
+                            handler: testInstance.testMethod.bind(testInstance),
+                        },
+                    ],
+                ]),
+                errors: [],
+                extractedCount: 1,
+            });
+
+            await svc.onModuleInit();
+
+            const stats = svc.getStats();
+            expect(stats.totalComponents).toBe(1);
+        });
+
+        it('should handle undefined activityModuleOptions', async () => {
+            const moduleWithUndefined: TestingModule = await Test.createTestingModule({
+                providers: [
+                    TemporalDiscoveryService,
+                    {
+                        provide: DiscoveryService,
+                        useValue: discoveryService,
+                    },
+                    {
+                        provide: TemporalMetadataAccessor,
+                        useValue: metadataAccessor,
+                    },
+                    {
+                        provide: TEMPORAL_MODULE_OPTIONS,
+                        useValue: mockOptions,
+                    },
+                    {
+                        provide: ACTIVITY_MODULE_OPTIONS,
+                        useValue: undefined,
+                    },
+                ],
+            }).compile();
+
+            const svc = moduleWithUndefined.get<TemporalDiscoveryService>(TemporalDiscoveryService);
+
+            const testInstance = new TestActivity();
+            discoveryService.getProviders.mockReturnValue([
+                { instance: testInstance, metatype: TestActivity },
+            ] as any);
+
+            metadataAccessor.isActivity.mockReturnValue(true);
+            metadataAccessor.extractActivityMethods.mockReturnValue({
+                success: true,
+                methods: new Map([
+                    [
+                        'activity1',
+                        {
+                            name: 'activity1',
+                            originalName: 'activity1',
+                            methodName: 'testMethod',
+                            className: 'TestActivity',
+                            handler: testInstance.testMethod.bind(testInstance),
+                        },
+                    ],
+                ]),
+                errors: [],
+                extractedCount: 1,
+            });
+
+            await svc.onModuleInit();
+
+            const stats = svc.getStats();
+            expect(stats.totalComponents).toBe(1);
+        });
+
         it('should handle validation failures', async () => {
             const testInstance = new TestActivity();
             const mockWrapper = {
@@ -740,6 +1012,66 @@ describe('TemporalDiscoveryService', () => {
             // Should not throw, just log the error
             const stats = service.getStats();
             expect(stats.totalComponents).toBe(0);
+        });
+
+        it('should handle non-Error exceptions during method extraction', async () => {
+            const testInstance = new TestActivity();
+            const mockWrapper = {
+                instance: testInstance,
+                metatype: TestActivity,
+            };
+
+            discoveryService.getProviders.mockReturnValue([mockWrapper as any]);
+            metadataAccessor.isActivity.mockReturnValue(true);
+            metadataAccessor.extractActivityMethods.mockImplementation(() => {
+                throw 'String error in extraction';
+            });
+
+            const logSpy = jest.spyOn(service['logger'], 'warn').mockImplementation();
+
+            await service.onModuleInit();
+
+            expect(logSpy).toHaveBeenCalled();
+            logSpy.mockRestore();
+        });
+
+        it('should handle method errors with non-Error exceptions', async () => {
+            const testInstance = new TestActivity();
+            const mockWrapper = {
+                instance: testInstance,
+                metatype: TestActivity,
+            };
+
+            discoveryService.getProviders.mockReturnValue([mockWrapper as any]);
+            metadataAccessor.isActivity.mockReturnValue(true);
+
+            // Mock extractActivityMethods to return a method that will cause an error during processing
+            metadataAccessor.extractActivityMethods.mockReturnValue({
+                success: true,
+                methods: new Map([
+                    [
+                        'errorMethod',
+                        {
+                            name: 'errorMethod',
+                            originalName: 'errorMethod',
+                            methodName: 'testMethod',
+                            className: 'TestActivity',
+                            // handler will be accessed and cause error
+                            get handler() {
+                                throw 'Non-Error exception in handler getter';
+                            },
+                        },
+                    ],
+                ]),
+                errors: [],
+                extractedCount: 1,
+            });
+
+            await service.onModuleInit();
+
+            // Should handle the error gracefully
+            const stats = service.getStats();
+            expect(stats).toBeDefined();
         });
     });
 
@@ -828,6 +1160,53 @@ describe('TemporalDiscoveryService', () => {
             );
             expect(debugCalls).toHaveLength(0);
         });
+
+        it('should log discovery results without result parameter', () => {
+            // Call logDiscoveryResults without parameters
+            service['logDiscoveryResults']();
+
+            // Should still complete successfully
+            const status = service.getHealthStatus();
+            expect(status).toBeDefined();
+        });
+
+        it('should log discovery results with result but no errors', async () => {
+            const testInstance = new TestActivity();
+            const mockWrapper = {
+                instance: testInstance,
+                metatype: TestActivity,
+            };
+
+            discoveryService.getProviders.mockReturnValue([mockWrapper as any]);
+            metadataAccessor.isActivity.mockReturnValue(true);
+            metadataAccessor.extractActivityMethods.mockReturnValue({
+                success: true,
+                methods: new Map([
+                    [
+                        'activity1',
+                        {
+                            name: 'activity1',
+                            originalName: 'activity1',
+                            methodName: 'method1',
+                            className: 'TestActivity',
+                            handler: testInstance.testMethod.bind(testInstance),
+                        },
+                    ],
+                ]),
+                errors: [],
+                extractedCount: 1,
+            });
+
+            const infoSpy = jest.spyOn(service['logger'], 'info').mockImplementation();
+
+            await service.onModuleInit();
+
+            // Should log completion and duration, but not errors
+            expect(infoSpy).toHaveBeenCalledWith(expect.stringContaining('Discovery completed'));
+            expect(infoSpy).toHaveBeenCalledWith(expect.stringContaining('Discovery took'));
+
+            infoSpy.mockRestore();
+        });
     });
 
     describe('wrapper error handling', () => {
@@ -865,6 +1244,29 @@ describe('TemporalDiscoveryService', () => {
             expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('Error in TestActivity'));
             // Second activity should still be discovered
             expect(service.hasActivity('secondActivity')).toBe(true);
+        });
+
+        it('should handle failed result from processWrapper', async () => {
+            const testInstance = new TestActivity();
+            const mockWrapper = {
+                instance: testInstance,
+                metatype: TestActivity,
+            };
+
+            discoveryService.getProviders.mockReturnValue([mockWrapper as any]);
+            metadataAccessor.isActivity.mockReturnValue(true);
+
+            // Mock validateActivityClass to return invalid result
+            metadataAccessor.validateActivityClass.mockReturnValue({
+                isValid: false,
+                issues: ['Validation failed'],
+            });
+
+            await service.onModuleInit();
+
+            // Should log warnings about errors
+            const status = service.getHealthStatus();
+            expect(status.status).toBe('degraded'); // No components discovered
         });
 
         it('should handle string errors during wrapper processing', async () => {

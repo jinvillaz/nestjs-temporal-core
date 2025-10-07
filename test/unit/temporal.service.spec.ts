@@ -960,5 +960,262 @@ describe('TemporalService', () => {
 
             expect(health.status).toBe('not_available');
         });
+
+        it('should handle isWorkerRunning when workerService is null line 345', async () => {
+            // Create service without worker service
+            const moduleWithoutWorker: TestingModule = await Test.createTestingModule({
+                providers: [
+                    TemporalService,
+                    {
+                        provide: TEMPORAL_MODULE_OPTIONS,
+                        useValue: mockOptions,
+                    },
+                    {
+                        provide: TemporalClientService,
+                        useValue: mockClientService,
+                    },
+                    {
+                        provide: TemporalWorkerManagerService,
+                        useValue: null,
+                    },
+                    {
+                        provide: TemporalScheduleService,
+                        useValue: mockScheduleService,
+                    },
+                    {
+                        provide: TemporalDiscoveryService,
+                        useValue: mockDiscoveryService,
+                    },
+                    {
+                        provide: TemporalMetadataAccessor,
+                        useValue: mockMetadataAccessor,
+                    },
+                ],
+            }).compile();
+
+            const serviceWithoutWorker = moduleWithoutWorker.get<TemporalService>(TemporalService);
+            await serviceWithoutWorker.onModuleInit();
+
+            const isRunning = serviceWithoutWorker.isWorkerRunning();
+
+            expect(isRunning).toBe(false);
+        });
+
+        it('should handle getWorkerStatus when workerService is null line 363', async () => {
+            // Create service without worker service
+            const moduleWithoutWorker: TestingModule = await Test.createTestingModule({
+                providers: [
+                    TemporalService,
+                    {
+                        provide: TEMPORAL_MODULE_OPTIONS,
+                        useValue: mockOptions,
+                    },
+                    {
+                        provide: TemporalClientService,
+                        useValue: mockClientService,
+                    },
+                    {
+                        provide: TemporalWorkerManagerService,
+                        useValue: null,
+                    },
+                    {
+                        provide: TemporalScheduleService,
+                        useValue: mockScheduleService,
+                    },
+                    {
+                        provide: TemporalDiscoveryService,
+                        useValue: mockDiscoveryService,
+                    },
+                    {
+                        provide: TemporalMetadataAccessor,
+                        useValue: mockMetadataAccessor,
+                    },
+                ],
+            }).compile();
+
+            const serviceWithoutWorker = moduleWithoutWorker.get<TemporalService>(TemporalService);
+            await serviceWithoutWorker.onModuleInit();
+
+            const status = serviceWithoutWorker.getWorkerStatus();
+
+            expect(status).toBeNull();
+        });
+
+        it('should handle isActivityMethod when reflection fails line 454', async () => {
+            await service.onModuleInit();
+
+            // Create a problematic target that causes reflection to fail
+            const target = {};
+            const methodName = 'testMethod';
+
+            // Mock Reflect.hasMetadata to throw
+            const originalHasMetadata = Reflect.hasMetadata;
+            Reflect.hasMetadata = jest.fn().mockImplementation(() => {
+                throw new Error('Reflection error');
+            });
+
+            const result = service.isActivityMethod(target, methodName);
+
+            expect(result).toBe(false);
+
+            // Restore
+            Reflect.hasMetadata = originalHasMetadata;
+        });
+
+        it('should handle getWorkerHealth with unhealthy worker not running line 537', async () => {
+            mockWorkerService.isWorkerAvailable = jest.fn().mockReturnValue(true);
+            mockWorkerService.getWorkerStatus = jest.fn().mockReturnValue({
+                isHealthy: false,
+                isRunning: false,
+                isInitialized: true,
+                taskQueue: 'test-queue',
+                namespace: 'test-namespace',
+                activitiesCount: 0,
+            });
+
+            await service.onModuleInit();
+
+            const health = await service.getWorkerHealth();
+
+            expect(health.status).toBe('unhealthy');
+            expect(health.details).toBeDefined();
+        });
+
+        it('should handle getWorkerHealth with worker running but not healthy line 545-548', async () => {
+            mockWorkerService.isWorkerAvailable = jest.fn().mockReturnValue(true);
+            mockWorkerService.getWorkerStatus = jest.fn().mockReturnValue({
+                isHealthy: false,
+                isRunning: true,
+                isInitialized: true,
+                taskQueue: 'test-queue',
+                namespace: 'test-namespace',
+                activitiesCount: 0,
+            });
+
+            await service.onModuleInit();
+
+            const health = await service.getWorkerHealth();
+
+            expect(health.status).toBe('degraded');
+            expect(health.details).toBeDefined();
+        });
+
+        it('should handle getWorkerHealth exception line 556', async () => {
+            mockWorkerService.isWorkerAvailable = jest.fn().mockReturnValue(true);
+            mockWorkerService.getWorkerStatus = jest.fn().mockImplementation(() => {
+                throw new Error('Worker status error');
+            });
+
+            await service.onModuleInit();
+
+            const health = await service.getWorkerHealth();
+
+            expect(health.status).toBe('unhealthy');
+            expect(health.details).toBeUndefined();
+        });
+
+        it('should handle getWorkerHealthStatus when workerService is null line 724', async () => {
+            // Create service without worker service
+            const moduleWithoutWorker: TestingModule = await Test.createTestingModule({
+                providers: [
+                    TemporalService,
+                    {
+                        provide: TEMPORAL_MODULE_OPTIONS,
+                        useValue: mockOptions,
+                    },
+                    {
+                        provide: TemporalClientService,
+                        useValue: mockClientService,
+                    },
+                    {
+                        provide: TemporalWorkerManagerService,
+                        useValue: null,
+                    },
+                    {
+                        provide: TemporalScheduleService,
+                        useValue: mockScheduleService,
+                    },
+                    {
+                        provide: TemporalDiscoveryService,
+                        useValue: mockDiscoveryService,
+                    },
+                    {
+                        provide: TemporalMetadataAccessor,
+                        useValue: mockMetadataAccessor,
+                    },
+                ],
+            }).compile();
+
+            const serviceWithoutWorker = moduleWithoutWorker.get<TemporalService>(TemporalService);
+            await serviceWithoutWorker.onModuleInit();
+
+            const status = (serviceWithoutWorker as any).getWorkerHealthStatus();
+
+            expect(status.status).toBe('unhealthy');
+            expect(status.details.error).toBe('Worker service not available');
+        });
+
+        it('should handle getOverallHealth with unhealthy worker line 676-686', async () => {
+            mockWorkerService.isWorkerAvailable = jest.fn().mockReturnValue(true);
+            mockWorkerService.getWorkerStatus = jest.fn().mockReturnValue({
+                isHealthy: false,
+                isRunning: false,
+                isInitialized: true,
+                taskQueue: 'test-queue',
+                namespace: 'test-namespace',
+                activitiesCount: 0,
+            });
+
+            await service.onModuleInit();
+
+            const health = await service.getOverallHealth();
+
+            // When worker is not healthy, getWorkerHealthStatus returns 'degraded'
+            // This causes overall health to be degraded (not unhealthy)
+            expect(health.status).toBe('degraded');
+            expect(health.components.worker.status).toBe('degraded');
+        });
+
+        it('should test logServiceStatus private method lines 676-686', async () => {
+            await service.onModuleInit();
+
+            // Call the private method directly
+            const logSpy = jest
+                .spyOn((service as any).temporalLogger, 'debug')
+                .mockImplementation();
+
+            (service as any).logServiceStatus();
+
+            expect(logSpy).toHaveBeenCalledTimes(4);
+            expect(logSpy).toHaveBeenCalledWith(
+                expect.stringContaining('Service Status - Overall:'),
+            );
+            expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('Client:'));
+            expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('Activities:'));
+            expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('Namespace:'));
+
+            logSpy.mockRestore();
+        });
+
+        it('should handle getWorkerHealth with completely unhealthy worker line 537', async () => {
+            mockWorkerService.isWorkerAvailable = jest.fn().mockReturnValue(true);
+            // Worker is not healthy AND not running = unhealthy status
+            mockWorkerService.getWorkerStatus = jest.fn().mockReturnValue({
+                isHealthy: false,
+                isRunning: false,
+                isInitialized: true,
+                taskQueue: 'test-queue',
+                namespace: 'test-namespace',
+                activitiesCount: 0,
+            });
+
+            await service.onModuleInit();
+
+            const health = await service.getWorkerHealth();
+
+            // When worker is not healthy AND not running, status should be 'unhealthy'
+            expect(health.status).toBe('unhealthy');
+            expect(health.details).toBeDefined();
+        });
     });
 });
