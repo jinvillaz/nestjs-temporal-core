@@ -27,6 +27,19 @@ import { TemporalConnectionFactory } from './providers/temporal-connection.facto
  * - Schedule management
  * - Comprehensive logging and error handling
  * - Graceful degradation and fault tolerance
+ * - Automatic shutdown hook registration for graceful termination (call app.enableShutdownHooks())
+ *
+ * IMPORTANT: To ensure graceful worker shutdown, you must call app.enableShutdownHooks()
+ * in your main.ts file after creating the NestJS application:
+ *
+ * @example
+ * ```typescript
+ * async function bootstrap() {
+ *   const app = await NestFactory.create(AppModule);
+ *   app.enableShutdownHooks(); // Required for graceful worker shutdown
+ *   await app.listen(3000);
+ * }
+ * ```
  */
 @Module({})
 export class TemporalModule {

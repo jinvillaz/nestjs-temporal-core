@@ -71,7 +71,7 @@ describe('TemporalScheduleService - Coverage Improvements', () => {
     describe('discoverAndRegisterSchedules error path (lines 156-158)', () => {
         it('should handle discoverAndRegisterSchedules error - Error instance', async () => {
             // Spy on the debug logger to make it throw
-            jest.spyOn((service as any).temporalLogger, 'debug').mockImplementation(() => {
+            jest.spyOn((service as any).logger, 'debug').mockImplementation(() => {
                 throw new Error('Discovery failed');
             });
 
@@ -85,6 +85,7 @@ describe('TemporalScheduleService - Coverage Improvements', () => {
             expect(result.duration).toBeGreaterThanOrEqual(0);
             expect(loggerSpy).toHaveBeenCalledWith(
                 'Failed to discover schedules: Discovery failed',
+                expect.any(Error),
             );
 
             loggerSpy.mockRestore();
@@ -92,7 +93,7 @@ describe('TemporalScheduleService - Coverage Improvements', () => {
 
         it('should handle discoverAndRegisterSchedules error - non-Error', async () => {
             // Spy on the debug logger to make it throw a non-Error
-            jest.spyOn((service as any).temporalLogger, 'debug').mockImplementation(() => {
+            jest.spyOn((service as any).logger, 'debug').mockImplementation(() => {
                 throw 'String error';
             });
 
@@ -104,13 +105,16 @@ describe('TemporalScheduleService - Coverage Improvements', () => {
             expect(result.discoveredCount).toBe(0);
             expect(result.errors).toEqual([{ schedule: 'discovery', error: 'Unknown error' }]);
             expect(result.duration).toBeGreaterThanOrEqual(0);
-            expect(loggerSpy).toHaveBeenCalledWith('Failed to discover schedules: Unknown error');
+            expect(loggerSpy).toHaveBeenCalledWith(
+                'Failed to discover schedules: Unknown error',
+                'String error',
+            );
 
             loggerSpy.mockRestore();
         });
 
         it('should handle discoverAndRegisterSchedules error - null', async () => {
-            jest.spyOn((service as any).temporalLogger, 'debug').mockImplementation(() => {
+            jest.spyOn((service as any).logger, 'debug').mockImplementation(() => {
                 throw null;
             });
 
@@ -121,13 +125,16 @@ describe('TemporalScheduleService - Coverage Improvements', () => {
             expect(result.success).toBe(false);
             expect(result.discoveredCount).toBe(0);
             expect(result.errors).toEqual([{ schedule: 'discovery', error: 'Unknown error' }]);
-            expect(loggerSpy).toHaveBeenCalledWith('Failed to discover schedules: Unknown error');
+            expect(loggerSpy).toHaveBeenCalledWith(
+                'Failed to discover schedules: Unknown error',
+                null,
+            );
 
             loggerSpy.mockRestore();
         });
 
         it('should handle discoverAndRegisterSchedules error - undefined', async () => {
-            jest.spyOn((service as any).temporalLogger, 'debug').mockImplementation(() => {
+            jest.spyOn((service as any).logger, 'debug').mockImplementation(() => {
                 throw undefined;
             });
 
@@ -138,13 +145,16 @@ describe('TemporalScheduleService - Coverage Improvements', () => {
             expect(result.success).toBe(false);
             expect(result.discoveredCount).toBe(0);
             expect(result.errors).toEqual([{ schedule: 'discovery', error: 'Unknown error' }]);
-            expect(loggerSpy).toHaveBeenCalledWith('Failed to discover schedules: Unknown error');
+            expect(loggerSpy).toHaveBeenCalledWith(
+                'Failed to discover schedules: Unknown error',
+                undefined,
+            );
 
             loggerSpy.mockRestore();
         });
 
         it('should handle discoverAndRegisterSchedules error - object', async () => {
-            jest.spyOn((service as any).temporalLogger, 'debug').mockImplementation(() => {
+            jest.spyOn((service as any).logger, 'debug').mockImplementation(() => {
                 throw { code: 'ERR_DISCOVERY' };
             });
 
@@ -155,7 +165,10 @@ describe('TemporalScheduleService - Coverage Improvements', () => {
             expect(result.success).toBe(false);
             expect(result.discoveredCount).toBe(0);
             expect(result.errors).toEqual([{ schedule: 'discovery', error: 'Unknown error' }]);
-            expect(loggerSpy).toHaveBeenCalledWith('Failed to discover schedules: Unknown error');
+            expect(loggerSpy).toHaveBeenCalledWith(
+                'Failed to discover schedules: Unknown error',
+                expect.objectContaining({ code: 'ERR_DISCOVERY' }),
+            );
 
             loggerSpy.mockRestore();
         });
@@ -355,6 +368,7 @@ describe('TemporalScheduleService - Coverage Improvements', () => {
 
             expect(loggerSpy).toHaveBeenCalledWith(
                 'Error during schedule service shutdown: Clear failed',
+                expect.any(Error),
             );
 
             loggerSpy.mockRestore();
@@ -371,6 +385,7 @@ describe('TemporalScheduleService - Coverage Improvements', () => {
 
             expect(loggerSpy).toHaveBeenCalledWith(
                 'Error during schedule service shutdown: Unknown error',
+                'String error',
             );
 
             loggerSpy.mockRestore();
@@ -407,6 +422,7 @@ describe('TemporalScheduleService - Coverage Improvements', () => {
             expect(result.error).toBeInstanceOf(Error);
             expect(loggerSpy).toHaveBeenCalledWith(
                 'Failed to create schedule test-schedule: Create failed',
+                expect.any(Error),
             );
 
             loggerSpy.mockRestore();
@@ -435,6 +451,7 @@ describe('TemporalScheduleService - Coverage Improvements', () => {
             }
             expect(loggerSpy).toHaveBeenCalledWith(
                 'Failed to create schedule test-schedule: Unknown error',
+                'String error',
             );
 
             loggerSpy.mockRestore();
@@ -454,6 +471,7 @@ describe('TemporalScheduleService - Coverage Improvements', () => {
             expect(result.error).toBeInstanceOf(Error);
             expect(loggerSpy).toHaveBeenCalledWith(
                 'Failed to get schedule test-schedule: Get handle failed',
+                expect.any(Error),
             );
 
             loggerSpy.mockRestore();
@@ -476,6 +494,7 @@ describe('TemporalScheduleService - Coverage Improvements', () => {
             }
             expect(loggerSpy).toHaveBeenCalledWith(
                 'Failed to get schedule test-schedule: Unknown error',
+                'String error',
             );
 
             loggerSpy.mockRestore();

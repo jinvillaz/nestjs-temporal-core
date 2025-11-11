@@ -185,6 +185,18 @@ export interface TemporalOptions extends LoggerConfig {
     autoRestart?: boolean;
     isGlobal?: boolean;
     allowConnectionFailure?: boolean;
+    /**
+     * Enable NestJS shutdown hooks to properly handle SIGTERM/SIGINT signals.
+     * When enabled, the module will register shutdown hooks to ensure graceful worker termination.
+     * @default true
+     */
+    enableShutdownHooks?: boolean;
+    /**
+     * Maximum time in milliseconds to wait for graceful worker shutdown.
+     * After this timeout, the shutdown process will complete anyway to prevent hanging.
+     * @default 30000 (30 seconds)
+     */
+    shutdownTimeout?: number;
 }
 
 /**

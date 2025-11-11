@@ -247,12 +247,26 @@ describe('TemporalWorkerManagerService - Multiple Workers', () => {
                     },
                     {
                         provide: TEMPORAL_CONNECTION,
-                        useValue: null, // No connection
+                        useValue: null, // No injected connection, force creation attempt
                     },
                 ],
             }).compile();
 
             service = module.get<TemporalWorkerManagerService>(TemporalWorkerManagerService);
+
+            // Mock the createConnection method to set connection to null
+            const createConnectionSpy = jest
+                .spyOn(service as any, 'createConnection')
+                .mockImplementation(async () => {
+                    (service as any).connection = null;
+                    (service as any).logger.error(
+                        'Failed to create connection',
+                        new Error('Connection failed'),
+                    );
+                    (service as any).logger.warn(
+                        'Worker connection failed - continuing without worker functionality',
+                    );
+                });
 
             const loggerWarnSpy = jest.spyOn((service as any).logger, 'warn').mockImplementation();
 
@@ -262,6 +276,7 @@ describe('TemporalWorkerManagerService - Multiple Workers', () => {
                 'Connection failed, skipping worker initialization',
             );
 
+            createConnectionSpy.mockRestore();
             loggerWarnSpy.mockRestore();
         });
 

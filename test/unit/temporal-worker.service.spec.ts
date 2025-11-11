@@ -353,9 +353,7 @@ describe('TemporalWorkerManagerService', () => {
 
             await service.stopWorker();
 
-            expect(loggerSpy).toHaveBeenCalledWith(
-                expect.stringContaining('already stopped'),
-            );
+            expect(loggerSpy).toHaveBeenCalledWith(expect.stringContaining('already stopped'));
             expect(mockWorker.shutdown).not.toHaveBeenCalled();
             loggerSpy.mockRestore();
         });
@@ -2676,8 +2674,10 @@ describe('TemporalWorkerManagerService', () => {
             await service.onModuleDestroy();
 
             expect(loggerSpy).toHaveBeenCalledWith(
-                expect.stringContaining("Error shutting down worker 'queue-1'"),
-                expect.any(Error),
+                expect.stringContaining(
+                    "Unexpected error shutting down worker 'queue-1': Shutdown failed",
+                ),
+                expect.anything(), // Stack trace or undefined
             );
             loggerSpy.mockRestore();
         });

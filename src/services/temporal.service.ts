@@ -1,4 +1,4 @@
-import { Injectable, Logger, OnModuleInit, OnModuleDestroy, Inject } from '@nestjs/common';
+import { Injectable, OnModuleInit, OnModuleDestroy, Inject } from '@nestjs/common';
 import { TEMPORAL_MODULE_OPTIONS } from '../constants';
 import {
     TemporalOptions,
@@ -26,7 +26,7 @@ import { TemporalWorkerManagerService } from './temporal-worker.service';
 import { TemporalScheduleService } from './temporal-schedule.service';
 import { TemporalDiscoveryService } from './temporal-discovery.service';
 import { TemporalMetadataAccessor } from './temporal-metadata.service';
-import { TemporalLogger } from '../utils/logger';
+import { createLogger, TemporalLogger } from '../utils/logger';
 import { DEFAULT_TASK_QUEUE } from '../constants';
 
 /**
@@ -35,8 +35,7 @@ import { DEFAULT_TASK_QUEUE } from '../constants';
  */
 @Injectable()
 export class TemporalService implements OnModuleInit, OnModuleDestroy {
-    private readonly logger = new Logger(TemporalService.name);
-    private readonly temporalLogger = new TemporalLogger(TemporalService.name);
+    private readonly logger: TemporalLogger;
     private isInitialized = false;
     private shutdownPromise: Promise<void> | null = null;
 
@@ -48,7 +47,12 @@ export class TemporalService implements OnModuleInit, OnModuleDestroy {
         private readonly scheduleService: TemporalScheduleService,
         private readonly discoveryService: TemporalDiscoveryService,
         private readonly metadataAccessor: TemporalMetadataAccessor,
-    ) {}
+    ) {
+        this.logger = createLogger(TemporalService.name, {
+            enableLogger: options.enableLogger,
+            logLevel: options.logLevel,
+        });
+    }
 
     /**
      * Initialize the unified service
@@ -57,7 +61,7 @@ export class TemporalService implements OnModuleInit, OnModuleDestroy {
         const startTime = Date.now();
 
         try {
-            this.logger.log('Initializing Temporal Service...');
+            this.logger.info('Initializing Temporal Service...');
 
             // Wait for all individual services to initialize
             const initResult = await this.waitForServicesInitialization();
@@ -65,7 +69,7 @@ export class TemporalService implements OnModuleInit, OnModuleDestroy {
             // Mark this service as initialized
             this.isInitialized = true;
 
-            this.logger.log('Temporal Service initialized successfully');
+            this.logger.info('Temporal Service initialized successfully');
 
             return {
                 success: true,
@@ -74,7 +78,7 @@ export class TemporalService implements OnModuleInit, OnModuleDestroy {
             };
         } catch (error) {
             const errorMessage = this.extractErrorMessage(error);
-            this.logger.error(`Failed to initialize Temporal Service: ${errorMessage}`);
+            this.logger.error(`Failed to initialize Temporal Service: ${errorMessage}`, error);
 
             return {
                 success: false,
@@ -134,14 +138,13 @@ export class TemporalService implements OnModuleInit, OnModuleDestroy {
                 servicesStatus.metadata = true; // Metadata accessor is always available
 
                 if (servicesStatus.client && servicesStatus.discovery) {
-                    this.logger.debug('All critical services are ready');
                     return servicesStatus;
                 }
 
                 // Wait a bit before checking again
                 await new Promise((resolve) => setTimeout(resolve, 100));
-            } catch (error) {
-                this.logger.warn('Service readiness check failed', error);
+            } catch {
+                this.logger.warn('Service readiness check failed');
             }
         }
 
@@ -154,7 +157,7 @@ export class TemporalService implements OnModuleInit, OnModuleDestroy {
      */
     private async performShutdown(): Promise<void> {
         try {
-            this.logger.log('Shutting down Temporal Service...');
+            this.logger.info('Shutting down Temporal Service...');
 
             // Stop worker if running
             if (this.workerService && this.workerService.isWorkerRunning()) {
@@ -162,9 +165,12 @@ export class TemporalService implements OnModuleInit, OnModuleDestroy {
             }
 
             this.isInitialized = false;
-            this.logger.log('Temporal Service shut down successfully');
+            this.logger.info('Temporal Service shut down successfully');
         } catch (error) {
-            this.logger.error(`Error during service shutdown: ${this.extractErrorMessage(error)}`);
+            this.logger.error(
+                `Error during service shutdown: ${this.extractErrorMessage(error)}`,
+                error,
+            );
         } finally {
             this.shutdownPromise = null;
         }
@@ -198,6 +204,7 @@ export class TemporalService implements OnModuleInit, OnModuleDestroy {
             // Log the error and re-throw it instead of returning success: false
             this.logger.error(
                 `Failed to start workflow '${workflowType}': ${this.extractErrorMessage(error)}`,
+                error,
             );
             throw error instanceof Error ? error : new Error(this.extractErrorMessage(error));
         }
@@ -228,6 +235,7 @@ export class TemporalService implements OnModuleInit, OnModuleDestroy {
             // Log the error and re-throw it instead of returning success: false
             this.logger.error(
                 `Failed to signal workflow '${workflowId}' with signal '${signalName}': ${this.extractErrorMessage(error)}`,
+                error,
             );
             throw error instanceof Error ? error : new Error(this.extractErrorMessage(error));
         }
@@ -263,6 +271,7 @@ export class TemporalService implements OnModuleInit, OnModuleDestroy {
             // Log the error and re-throw it instead of returning success: false
             this.logger.error(
                 `Failed to query workflow '${workflowId}' with query '${queryName}': ${this.extractErrorMessage(error)}`,
+                error,
             );
             throw error instanceof Error ? error : new Error(this.extractErrorMessage(error));
         }
@@ -758,14 +767,12 @@ export class TemporalService implements OnModuleInit, OnModuleDestroy {
         const health = this.getHealth();
         const stats = this.getStats();
 
-        this.temporalLogger.debug(`Service Status - Overall: ${health.status}`);
-        this.temporalLogger.debug(
+        this.logger.debug(`Service Status - Overall: ${health.status}`);
+        this.logger.debug(
             `Client: ${health.services.client.status}, Worker: ${health.services.worker.status}`,
         );
-        this.temporalLogger.debug(
-            `Activities: ${stats.activities.total}, Schedules: ${stats.schedules}`,
-        );
-        this.temporalLogger.debug(`Namespace: ${health.namespace}`);
+        this.logger.debug(`Activities: ${stats.activities.total}, Schedules: ${stats.schedules}`);
+        this.logger.debug(`Namespace: ${health.namespace}`);
     }
 
     /**
