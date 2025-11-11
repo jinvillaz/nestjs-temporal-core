@@ -526,16 +526,17 @@ describe('TemporalWorkerManagerService - Branch Coverage', () => {
         });
 
         it('should return early when already running', async () => {
-            (service as any).worker = {};
+            (service as any).worker = { getState: jest.fn().mockReturnValue('RUNNING') };
             (service as any).isRunning = true;
 
             const loggerDebugSpy = jest
                 .spyOn((service as any).logger, 'debug')
                 .mockImplementation();
 
-            await service.stopWorker();
+            // Should return early without doing anything since already running
+            await service.startWorker();
 
-            // Verify that attempting to start shows it's already running
+            // Verify that we returned early (isRunning still true)
             expect((service as any).isRunning).toBe(true);
 
             loggerDebugSpy.mockRestore();

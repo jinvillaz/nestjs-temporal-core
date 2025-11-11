@@ -94,24 +94,25 @@ export class TemporalConnectionFactory implements OnModuleDestroy {
 
     /**
      * Cleanup all connections
+     *
+     * Note: Worker connections are NOT closed here as they may still be held by workers
+     * during shutdown. Workers manage their own connection lifecycle and will close
+     * connections when they are fully stopped. Attempting to close connections here
+     * would result in "Cannot close connection while Workers hold a reference" errors.
      */
     async cleanup(): Promise<void> {
         this.logger.info('Cleaning up all connections...');
 
-        // Close all worker connections
-        const workerCleanupPromises = Array.from(this.workerConnectionCache.values()).map(
-            async (connection) => {
-                try {
-                    await connection.close();
-                } catch (error) {
-                    this.logger.warn('Failed to close worker connection during cleanup', error);
-                }
-            },
+        // We do NOT close worker connections here because:
+        // 1. Workers may still be in STOPPING/DRAINING state during onModuleDestroy
+        // 2. Temporal SDK will throw if we try to close a connection with active worker references
+        // 3. The worker service (TemporalWorkerManagerService) handles connection cleanup
+        //    as part of its own shutdown process
+        this.logger.debug(
+            'Skipping worker connection cleanup - managed by worker service lifecycle',
         );
 
-        await Promise.allSettled(workerCleanupPromises);
-
-        // Clear caches
+        // Clear caches (connections will be garbage collected once workers release them)
         this.clientConnectionCache.clear();
         this.workerConnectionCache.clear();
         this.connectionAttempts.clear();

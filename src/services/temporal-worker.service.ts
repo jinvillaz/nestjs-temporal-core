@@ -380,6 +380,69 @@ export class TemporalWorkerManagerService
         }
 
         try {
+            this.logger.info(`Stopping worker for '${taskQueue}'...`);
+
+            try {
+                // Check worker state before attempting shutdown
+                const workerState = workerInstance.worker.getState();
+                this.logger.debug(`Worker '${taskQueue}' current state: ${workerState}`);
+
+                // Only attempt shutdown if worker is in a state that allows it
+                if (
+                    workerState === 'INITIALIZED' ||
+                    workerState === 'RUNNING' ||
+                    workerState === 'FAILED'
+                ) {
+                    await workerInstance.worker.shutdown();
+                    this.logger.info(`Worker for '${taskQueue}' stopped successfully`);
+                } else if (
+                    workerState === 'STOPPING' ||
+                    workerState === 'DRAINING' ||
+                    workerState === 'DRAINED'
+                ) {
+                    this.logger.info(
+                        `Worker for '${taskQueue}' is already shutting down (state: ${workerState})`,
+                    );
+                    // Wait for the worker to complete shutdown
+                    // The worker.run() promise will resolve when shutdown completes
+                } else if (workerState === 'STOPPED') {
+                    this.logger.debug(`Worker for '${taskQueue}' is already stopped`);
+                }
+            } catch (shutdownError: unknown) {
+                // Handle race condition where worker state changes between check and shutdown
+                const errorMessage =
+                    shutdownError instanceof Error
+                        ? shutdownError.message
+                        : String(shutdownError);
+                if (
+                    errorMessage.includes('Not running') ||
+                    errorMessage.includes('DRAINING') ||
+                    errorMessage.includes('STOPPING')
+                ) {
+                    this.logger.debug(
+                        `Worker '${taskQueue}' is already shutting down or stopped`,
+                    );
+                } else {
+                    // Re-throw unexpected errors
+                    throw shutdownError;
+                }
+            }
+
+            workerInstance.isRunning = false;
+            workerInstance.startedAt = null;
+        } catch (error) {
+            workerInstance.lastError = this.extractErrorMessage(error);
+            this.logger.warn(`Error while stopping worker for '${taskQueue}'`, error);
+            // Mark as not running even if shutdown failed
+            workerInstance.isRunning = false;
+        }
+    }
+
+    /**
+     * Get the native connection for creating custom workers
+```
+
+        try {
             this.logger.info(`Stopping worker for task queue '${taskQueue}'...`);
             await workerInstance.worker.shutdown();
             workerInstance.isRunning = false;
@@ -588,14 +651,38 @@ export class TemporalWorkerManagerService
 
         try {
             this.logger.info('Stopping Temporal worker...');
-            await this.worker.shutdown();
+
+            // Check worker state before attempting shutdown
+            const workerState = this.worker.getState();
+            this.logger.debug(`Worker current state: ${workerState}`);
+
+            // Only attempt shutdown if worker is in a state that allows it
+            if (
+                workerState === 'INITIALIZED' ||
+                workerState === 'RUNNING' ||
+                workerState === 'FAILED'
+            ) {
+                await this.worker.shutdown();
+                this.logger.info('Temporal worker stopped successfully');
+            } else if (
+                workerState === 'STOPPING' ||
+                workerState === 'DRAINING' ||
+                workerState === 'DRAINED'
+            ) {
+                this.logger.info(`Worker is already shutting down (state: ${workerState})`);
+                // Wait for the worker to complete shutdown
+                // The worker.run() promise will resolve when shutdown completes
+            } else if (workerState === 'STOPPED') {
+                this.logger.debug('Worker is already stopped');
+            }
+
             this.isRunning = false;
             this.startedAt = null;
-
-            this.logger.info('Temporal worker stopped successfully');
         } catch (error) {
             this.lastError = this.extractErrorMessage(error);
-            this.logger.error('Failed to stop worker gracefully', error);
+            this.logger.warn('Error stopping worker gracefully', error);
+            // Mark as not running even if shutdown failed
+            this.isRunning = false;
         }
     }
 
@@ -1120,9 +1207,52 @@ export class TemporalWorkerManagerService
                 this.logger.info(`Shutting down ${this.workers.size} workers...`);
                 for (const [taskQueue, workerInstance] of this.workers.entries()) {
                     try {
-                        if (workerInstance.isRunning) {
+                        if (workerInstance.isRunning && workerInstance.worker) {
                             this.logger.debug(`Stopping worker for '${taskQueue}'...`);
-                            await workerInstance.worker.shutdown();
+
+                            try {
+                                // Check worker state before attempting shutdown
+                                const workerState = workerInstance.worker.getState();
+
+                                // Only attempt shutdown if worker is in a state that allows it
+                                if (
+                                    workerState === 'INITIALIZED' ||
+                                    workerState === 'RUNNING' ||
+                                    workerState === 'FAILED'
+                                ) {
+                                    await workerInstance.worker.shutdown();
+                                    this.logger.debug(`Worker '${taskQueue}' shut down successfully`);
+                                } else if (
+                                    workerState === 'STOPPING' ||
+                                    workerState === 'DRAINING' ||
+                                    workerState === 'DRAINED'
+                                ) {
+                                    this.logger.debug(
+                                        `Worker '${taskQueue}' is already shutting down (state: ${workerState})`,
+                                    );
+                                } else if (workerState === 'STOPPED') {
+                                    this.logger.debug(`Worker '${taskQueue}' is already stopped`);
+                                }
+                            } catch (shutdownError: unknown) {
+                                // Handle race condition where worker state changes between check and shutdown
+                                const errorMessage =
+                                    shutdownError instanceof Error
+                                        ? shutdownError.message
+                                        : String(shutdownError);
+                                if (
+                                    errorMessage.includes('Not running') ||
+                                    errorMessage.includes('DRAINING') ||
+                                    errorMessage.includes('STOPPING')
+                                ) {
+                                    this.logger.debug(
+                                        `Worker '${taskQueue}' is already shutting down or stopped`,
+                                    );
+                                } else {
+                                    // Re-throw unexpected errors
+                                    throw shutdownError;
+                                }
+                            }
+
                             workerInstance.isRunning = false;
                         }
                     } catch (error) {

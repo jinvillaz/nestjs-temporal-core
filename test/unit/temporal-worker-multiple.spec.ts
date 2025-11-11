@@ -74,6 +74,7 @@ describe('TemporalWorkerManagerService - Multiple Workers', () => {
             const mockWorker = {
                 run: jest.fn().mockResolvedValue(undefined),
                 shutdown: jest.fn().mockResolvedValue(undefined),
+                getState: jest.fn().mockReturnValue('RUNNING'),
             };
 
             jest.mock('@temporalio/worker', () => ({
@@ -307,6 +308,7 @@ describe('TemporalWorkerManagerService - Multiple Workers', () => {
             const mockWorker = {
                 run: jest.fn().mockResolvedValue(undefined),
                 shutdown: jest.fn().mockResolvedValue(undefined),
+                getState: jest.fn().mockReturnValue('RUNNING'),
             };
 
             (service as any).workers = new Map([
@@ -436,6 +438,7 @@ describe('TemporalWorkerManagerService - Multiple Workers', () => {
             const mockWorker = {
                 run: jest.fn().mockResolvedValue(undefined),
                 shutdown: jest.fn().mockResolvedValue(undefined),
+                getState: jest.fn().mockReturnValue('RUNNING'),
             };
 
             const createWorkerSpy = jest
@@ -1110,6 +1113,7 @@ describe('TemporalWorkerManagerService - Multiple Workers', () => {
             const mockWorker = {
                 run: jest.fn(),
                 shutdown: jest.fn().mockResolvedValue(undefined),
+                getState: jest.fn().mockReturnValue('RUNNING'),
             };
 
             const workerInstance = {
@@ -1133,9 +1137,7 @@ describe('TemporalWorkerManagerService - Multiple Workers', () => {
             expect(workerInstance.isRunning).toBe(false);
             expect(workerInstance.startedAt).toBeNull();
             expect(mockWorker.shutdown).toHaveBeenCalled();
-            expect(loggerInfoSpy).toHaveBeenCalledWith(
-                "Stopping worker for task queue 'queue-1'...",
-            );
+            expect(loggerInfoSpy).toHaveBeenCalledWith("Stopping worker for 'queue-1'...");
 
             loggerInfoSpy.mockRestore();
         });
@@ -1257,6 +1259,7 @@ describe('TemporalWorkerManagerService - Multiple Workers', () => {
             const mockWorker = {
                 run: jest.fn(),
                 shutdown: jest.fn().mockRejectedValue(new Error('Shutdown failed')),
+                getState: jest.fn().mockReturnValue('RUNNING'),
             };
 
             const workerInstance = {
@@ -1273,21 +1276,198 @@ describe('TemporalWorkerManagerService - Multiple Workers', () => {
 
             (service as any).workers = new Map([['queue-1', workerInstance]]);
 
-            const loggerErrorSpy = jest
-                .spyOn((service as any).logger, 'error')
-                .mockImplementation();
+            const loggerWarnSpy = jest.spyOn((service as any).logger, 'warn').mockImplementation();
 
-            await expect(service.stopWorkerByTaskQueue('queue-1')).rejects.toThrow(
-                'Shutdown failed',
-            );
+            // Should handle error gracefully, not throw
+            await service.stopWorkerByTaskQueue('queue-1');
 
             expect(workerInstance.lastError).toBe('Shutdown failed');
-            expect(loggerErrorSpy).toHaveBeenCalledWith(
-                "Failed to stop worker for 'queue-1'",
+            expect(loggerWarnSpy).toHaveBeenCalledWith(
+                "Error while stopping worker for 'queue-1'",
                 expect.any(Error),
             );
 
-            loggerErrorSpy.mockRestore();
+            loggerWarnSpy.mockRestore();
+        });
+
+        it('should handle worker in STOPPING state', async () => {
+            const moduleOptions: TemporalOptions = {
+                connection: { address: 'localhost:7233' },
+                taskQueue: 'test-queue',
+            };
+
+            const module: TestingModule = await Test.createTestingModule({
+                providers: [
+                    TemporalWorkerManagerService,
+                    {
+                        provide: TemporalDiscoveryService,
+                        useValue: mockDiscoveryService,
+                    },
+                    {
+                        provide: TEMPORAL_MODULE_OPTIONS,
+                        useValue: moduleOptions,
+                    },
+                    {
+                        provide: TEMPORAL_CONNECTION,
+                        useValue: mockConnection,
+                    },
+                ],
+            }).compile();
+
+            service = module.get<TemporalWorkerManagerService>(TemporalWorkerManagerService);
+
+            const mockWorker = {
+                run: jest.fn(),
+                shutdown: jest.fn(),
+                getState: jest.fn().mockReturnValue('STOPPING'),
+            };
+
+            const workerInstance = {
+                worker: mockWorker,
+                taskQueue: 'queue-1',
+                namespace: 'default',
+                isRunning: true,
+                isInitialized: true,
+                lastError: null,
+                startedAt: new Date(),
+                activities: new Map(),
+                workflowSource: 'filesystem' as const,
+            };
+
+            (service as any).workers = new Map([['queue-1', workerInstance]]);
+
+            const loggerInfoSpy = jest.spyOn((service as any).logger, 'info').mockImplementation();
+
+            await service.stopWorkerByTaskQueue('queue-1');
+
+            expect(loggerInfoSpy).toHaveBeenCalledWith(
+                expect.stringContaining('already shutting down'),
+            );
+            expect(mockWorker.shutdown).not.toHaveBeenCalled();
+
+            loggerInfoSpy.mockRestore();
+        });
+
+        it('should handle worker in STOPPED state', async () => {
+            const moduleOptions: TemporalOptions = {
+                connection: { address: 'localhost:7233' },
+                taskQueue: 'test-queue',
+            };
+
+            const module: TestingModule = await Test.createTestingModule({
+                providers: [
+                    TemporalWorkerManagerService,
+                    {
+                        provide: TemporalDiscoveryService,
+                        useValue: mockDiscoveryService,
+                    },
+                    {
+                        provide: TEMPORAL_MODULE_OPTIONS,
+                        useValue: moduleOptions,
+                    },
+                    {
+                        provide: TEMPORAL_CONNECTION,
+                        useValue: mockConnection,
+                    },
+                ],
+            }).compile();
+
+            service = module.get<TemporalWorkerManagerService>(TemporalWorkerManagerService);
+
+            const mockWorker = {
+                run: jest.fn(),
+                shutdown: jest.fn(),
+                getState: jest.fn().mockReturnValue('STOPPED'),
+            };
+
+            const workerInstance = {
+                worker: mockWorker,
+                taskQueue: 'queue-1',
+                namespace: 'default',
+                isRunning: true,
+                isInitialized: true,
+                lastError: null,
+                startedAt: new Date(),
+                activities: new Map(),
+                workflowSource: 'filesystem' as const,
+            };
+
+            (service as any).workers = new Map([['queue-1', workerInstance]]);
+
+            const loggerDebugSpy = jest
+                .spyOn((service as any).logger, 'debug')
+                .mockImplementation();
+
+            await service.stopWorkerByTaskQueue('queue-1');
+
+            expect(loggerDebugSpy).toHaveBeenCalledWith(expect.stringContaining('already stopped'));
+            expect(mockWorker.shutdown).not.toHaveBeenCalled();
+
+            loggerDebugSpy.mockRestore();
+        });
+
+        it('should handle race condition errors gracefully', async () => {
+            const moduleOptions: TemporalOptions = {
+                connection: { address: 'localhost:7233' },
+                taskQueue: 'test-queue',
+            };
+
+            const module: TestingModule = await Test.createTestingModule({
+                providers: [
+                    TemporalWorkerManagerService,
+                    {
+                        provide: TemporalDiscoveryService,
+                        useValue: mockDiscoveryService,
+                    },
+                    {
+                        provide: TEMPORAL_MODULE_OPTIONS,
+                        useValue: moduleOptions,
+                    },
+                    {
+                        provide: TEMPORAL_CONNECTION,
+                        useValue: mockConnection,
+                    },
+                ],
+            }).compile();
+
+            service = module.get<TemporalWorkerManagerService>(TemporalWorkerManagerService);
+
+            // Mock a worker that reports RUNNING state but throws "Not running" error
+            const mockWorker = {
+                run: jest.fn(),
+                shutdown: jest
+                    .fn()
+                    .mockRejectedValue(new Error('Not running. Current state: DRAINING')),
+                getState: jest.fn().mockReturnValue('RUNNING'),
+            };
+
+            const workerInstance = {
+                worker: mockWorker,
+                taskQueue: 'queue-1',
+                namespace: 'default',
+                isRunning: true,
+                isInitialized: true,
+                lastError: null,
+                startedAt: new Date(),
+                activities: new Map(),
+                workflowSource: 'filesystem' as const,
+            };
+
+            (service as any).workers = new Map([['queue-1', workerInstance]]);
+
+            const loggerDebugSpy = jest
+                .spyOn((service as any).logger, 'debug')
+                .mockImplementation();
+
+            // Should handle race condition gracefully without throwing
+            await service.stopWorkerByTaskQueue('queue-1');
+
+            expect(loggerDebugSpy).toHaveBeenCalledWith(
+                expect.stringContaining('already shutting down or stopped'),
+            );
+            expect(mockWorker.shutdown).toHaveBeenCalled();
+
+            loggerDebugSpy.mockRestore();
         });
     });
 
@@ -1356,6 +1536,379 @@ describe('TemporalWorkerManagerService - Multiple Workers', () => {
             const result = service.getConnection();
 
             expect(result).toBeNull();
+        });
+    });
+
+    describe('onModuleDestroy - Multiple Workers Shutdown', () => {
+        it('should handle worker in STOPPING state during shutdown', async () => {
+            const moduleOptions: TemporalOptions = {
+                connection: { address: 'localhost:7233' },
+                workers: [{ taskQueue: 'queue-1', workflowsPath: './dist/workflows' }],
+            };
+
+            const module: TestingModule = await Test.createTestingModule({
+                providers: [
+                    TemporalWorkerManagerService,
+                    {
+                        provide: TemporalDiscoveryService,
+                        useValue: mockDiscoveryService,
+                    },
+                    {
+                        provide: TEMPORAL_MODULE_OPTIONS,
+                        useValue: moduleOptions,
+                    },
+                    {
+                        provide: TEMPORAL_CONNECTION,
+                        useValue: mockConnection,
+                    },
+                ],
+            }).compile();
+
+            service = module.get<TemporalWorkerManagerService>(TemporalWorkerManagerService);
+
+            const mockWorker = {
+                run: jest.fn().mockResolvedValue(undefined),
+                shutdown: jest.fn().mockResolvedValue(undefined),
+                getState: jest.fn().mockReturnValue('STOPPING'),
+            };
+
+            const workerInstance = {
+                worker: mockWorker,
+                taskQueue: 'queue-1',
+                namespace: 'default',
+                isRunning: true,
+                isInitialized: true,
+                lastError: null,
+                startedAt: new Date(),
+                restartCount: 0,
+                activities: new Map(),
+                workflowSource: 'filesystem' as const,
+            };
+
+            (service as any).workers = new Map([['queue-1', workerInstance]]);
+            (service as any).connection = mockConnection;
+
+            const loggerDebugSpy = jest
+                .spyOn((service as any).logger, 'debug')
+                .mockImplementation();
+
+            await service.onModuleDestroy();
+
+            expect(loggerDebugSpy).toHaveBeenCalledWith(
+                expect.stringContaining('already shutting down'),
+            );
+            expect(mockWorker.shutdown).not.toHaveBeenCalled();
+
+            loggerDebugSpy.mockRestore();
+        });
+
+        it('should handle worker in DRAINING state during shutdown', async () => {
+            const moduleOptions: TemporalOptions = {
+                connection: { address: 'localhost:7233' },
+                workers: [{ taskQueue: 'queue-1', workflowsPath: './dist/workflows' }],
+            };
+
+            const module: TestingModule = await Test.createTestingModule({
+                providers: [
+                    TemporalWorkerManagerService,
+                    {
+                        provide: TemporalDiscoveryService,
+                        useValue: mockDiscoveryService,
+                    },
+                    {
+                        provide: TEMPORAL_MODULE_OPTIONS,
+                        useValue: moduleOptions,
+                    },
+                    {
+                        provide: TEMPORAL_CONNECTION,
+                        useValue: mockConnection,
+                    },
+                ],
+            }).compile();
+
+            service = module.get<TemporalWorkerManagerService>(TemporalWorkerManagerService);
+
+            const mockWorker = {
+                run: jest.fn().mockResolvedValue(undefined),
+                shutdown: jest.fn().mockResolvedValue(undefined),
+                getState: jest.fn().mockReturnValue('DRAINING'),
+            };
+
+            const workerInstance = {
+                worker: mockWorker,
+                taskQueue: 'queue-1',
+                namespace: 'default',
+                isRunning: true,
+                isInitialized: true,
+                lastError: null,
+                startedAt: new Date(),
+                restartCount: 0,
+                activities: new Map(),
+                workflowSource: 'filesystem' as const,
+            };
+
+            (service as any).workers = new Map([['queue-1', workerInstance]]);
+            (service as any).connection = mockConnection;
+
+            const loggerDebugSpy = jest
+                .spyOn((service as any).logger, 'debug')
+                .mockImplementation();
+
+            await service.onModuleDestroy();
+
+            expect(loggerDebugSpy).toHaveBeenCalledWith(
+                expect.stringContaining('already shutting down'),
+            );
+            expect(mockWorker.shutdown).not.toHaveBeenCalled();
+
+            loggerDebugSpy.mockRestore();
+        });
+
+        it('should handle worker in DRAINED state during shutdown', async () => {
+            const moduleOptions: TemporalOptions = {
+                connection: { address: 'localhost:7233' },
+                workers: [{ taskQueue: 'queue-1', workflowsPath: './dist/workflows' }],
+            };
+
+            const module: TestingModule = await Test.createTestingModule({
+                providers: [
+                    TemporalWorkerManagerService,
+                    {
+                        provide: TemporalDiscoveryService,
+                        useValue: mockDiscoveryService,
+                    },
+                    {
+                        provide: TEMPORAL_MODULE_OPTIONS,
+                        useValue: moduleOptions,
+                    },
+                    {
+                        provide: TEMPORAL_CONNECTION,
+                        useValue: mockConnection,
+                    },
+                ],
+            }).compile();
+
+            service = module.get<TemporalWorkerManagerService>(TemporalWorkerManagerService);
+
+            const mockWorker = {
+                run: jest.fn().mockResolvedValue(undefined),
+                shutdown: jest.fn().mockResolvedValue(undefined),
+                getState: jest.fn().mockReturnValue('DRAINED'),
+            };
+
+            const workerInstance = {
+                worker: mockWorker,
+                taskQueue: 'queue-1',
+                namespace: 'default',
+                isRunning: true,
+                isInitialized: true,
+                lastError: null,
+                startedAt: new Date(),
+                restartCount: 0,
+                activities: new Map(),
+                workflowSource: 'filesystem' as const,
+            };
+
+            (service as any).workers = new Map([['queue-1', workerInstance]]);
+            (service as any).connection = mockConnection;
+
+            const loggerDebugSpy = jest
+                .spyOn((service as any).logger, 'debug')
+                .mockImplementation();
+
+            await service.onModuleDestroy();
+
+            expect(loggerDebugSpy).toHaveBeenCalledWith(
+                expect.stringContaining('already shutting down'),
+            );
+            expect(mockWorker.shutdown).not.toHaveBeenCalled();
+
+            loggerDebugSpy.mockRestore();
+        });
+
+        it('should handle worker in STOPPED state during shutdown', async () => {
+            const moduleOptions: TemporalOptions = {
+                connection: { address: 'localhost:7233' },
+                workers: [{ taskQueue: 'queue-1', workflowsPath: './dist/workflows' }],
+            };
+
+            const module: TestingModule = await Test.createTestingModule({
+                providers: [
+                    TemporalWorkerManagerService,
+                    {
+                        provide: TemporalDiscoveryService,
+                        useValue: mockDiscoveryService,
+                    },
+                    {
+                        provide: TEMPORAL_MODULE_OPTIONS,
+                        useValue: moduleOptions,
+                    },
+                    {
+                        provide: TEMPORAL_CONNECTION,
+                        useValue: mockConnection,
+                    },
+                ],
+            }).compile();
+
+            service = module.get<TemporalWorkerManagerService>(TemporalWorkerManagerService);
+
+            const mockWorker = {
+                run: jest.fn().mockResolvedValue(undefined),
+                shutdown: jest.fn().mockResolvedValue(undefined),
+                getState: jest.fn().mockReturnValue('STOPPED'),
+            };
+
+            const workerInstance = {
+                worker: mockWorker,
+                taskQueue: 'queue-1',
+                namespace: 'default',
+                isRunning: true,
+                isInitialized: true,
+                lastError: null,
+                startedAt: new Date(),
+                restartCount: 0,
+                activities: new Map(),
+                workflowSource: 'filesystem' as const,
+            };
+
+            (service as any).workers = new Map([['queue-1', workerInstance]]);
+            (service as any).connection = mockConnection;
+
+            const loggerDebugSpy = jest
+                .spyOn((service as any).logger, 'debug')
+                .mockImplementation();
+
+            await service.onModuleDestroy();
+
+            expect(loggerDebugSpy).toHaveBeenCalledWith(expect.stringContaining('already stopped'));
+            expect(mockWorker.shutdown).not.toHaveBeenCalled();
+
+            loggerDebugSpy.mockRestore();
+        });
+
+        it('should handle race condition during shutdown - Not running error', async () => {
+            const moduleOptions: TemporalOptions = {
+                connection: { address: 'localhost:7233' },
+                workers: [{ taskQueue: 'queue-1', workflowsPath: './dist/workflows' }],
+            };
+
+            const module: TestingModule = await Test.createTestingModule({
+                providers: [
+                    TemporalWorkerManagerService,
+                    {
+                        provide: TemporalDiscoveryService,
+                        useValue: mockDiscoveryService,
+                    },
+                    {
+                        provide: TEMPORAL_MODULE_OPTIONS,
+                        useValue: moduleOptions,
+                    },
+                    {
+                        provide: TEMPORAL_CONNECTION,
+                        useValue: mockConnection,
+                    },
+                ],
+            }).compile();
+
+            service = module.get<TemporalWorkerManagerService>(TemporalWorkerManagerService);
+
+            const mockWorker = {
+                run: jest.fn().mockResolvedValue(undefined),
+                shutdown: jest
+                    .fn()
+                    .mockRejectedValue(new Error('Not running. Current state: DRAINING')),
+                getState: jest.fn().mockReturnValue('RUNNING'),
+            };
+
+            const workerInstance = {
+                worker: mockWorker,
+                taskQueue: 'queue-1',
+                namespace: 'default',
+                isRunning: true,
+                isInitialized: true,
+                lastError: null,
+                startedAt: new Date(),
+                restartCount: 0,
+                activities: new Map(),
+                workflowSource: 'filesystem' as const,
+            };
+
+            (service as any).workers = new Map([['queue-1', workerInstance]]);
+            (service as any).connection = mockConnection;
+
+            const loggerDebugSpy = jest
+                .spyOn((service as any).logger, 'debug')
+                .mockImplementation();
+
+            await service.onModuleDestroy();
+
+            expect(loggerDebugSpy).toHaveBeenCalledWith(
+                expect.stringContaining('already shutting down or stopped'),
+            );
+            expect(mockWorker.shutdown).toHaveBeenCalled();
+
+            loggerDebugSpy.mockRestore();
+        });
+
+        it('should handle race condition during shutdown - STOPPING error', async () => {
+            const moduleOptions: TemporalOptions = {
+                connection: { address: 'localhost:7233' },
+                workers: [{ taskQueue: 'queue-1', workflowsPath: './dist/workflows' }],
+            };
+
+            const module: TestingModule = await Test.createTestingModule({
+                providers: [
+                    TemporalWorkerManagerService,
+                    {
+                        provide: TemporalDiscoveryService,
+                        useValue: mockDiscoveryService,
+                    },
+                    {
+                        provide: TEMPORAL_MODULE_OPTIONS,
+                        useValue: moduleOptions,
+                    },
+                    {
+                        provide: TEMPORAL_CONNECTION,
+                        useValue: mockConnection,
+                    },
+                ],
+            }).compile();
+
+            service = module.get<TemporalWorkerManagerService>(TemporalWorkerManagerService);
+
+            const mockWorker = {
+                run: jest.fn().mockResolvedValue(undefined),
+                shutdown: jest.fn().mockRejectedValue(new Error('Worker is STOPPING')),
+                getState: jest.fn().mockReturnValue('RUNNING'),
+            };
+
+            const workerInstance = {
+                worker: mockWorker,
+                taskQueue: 'queue-1',
+                namespace: 'default',
+                isRunning: true,
+                isInitialized: true,
+                lastError: null,
+                startedAt: new Date(),
+                restartCount: 0,
+                activities: new Map(),
+                workflowSource: 'filesystem' as const,
+            };
+
+            (service as any).workers = new Map([['queue-1', workerInstance]]);
+            (service as any).connection = mockConnection;
+
+            const loggerDebugSpy = jest
+                .spyOn((service as any).logger, 'debug')
+                .mockImplementation();
+
+            await service.onModuleDestroy();
+
+            expect(loggerDebugSpy).toHaveBeenCalledWith(
+                expect.stringContaining('already shutting down or stopped'),
+            );
+
+            loggerDebugSpy.mockRestore();
         });
     });
 });
