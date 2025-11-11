@@ -1,4 +1,10 @@
 # Changelog
+## [3.1.1] - 2025-11-11
+
+### Changes
+
+- Delete .github/README.md (6f9cee4)
+
 ## [3.1.0] - 2025-11-11
 
 ### Changes
