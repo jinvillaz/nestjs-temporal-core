@@ -2889,4 +2889,193 @@ describe('TemporalWorkerManagerService', () => {
             expect(mockDiscoveryService.getAllActivities).toHaveBeenCalled();
         });
     });
+
+    describe('onApplicationBootstrap - Error handling coverage', () => {
+        it('should throw error when worker start fails and allowConnectionFailure is false', async () => {
+            const strictOptions: TemporalOptions = {
+                connection: {
+                    namespace: 'test-namespace',
+                    address: 'localhost:7233',
+                },
+                workers: [
+                    {
+                        taskQueue: 'queue-1',
+                        workflowsPath: './dist/workflows',
+                        autoStart: true,
+                    },
+                ],
+                allowConnectionFailure: false,
+                enableLogger: false,
+            };
+
+            const module: TestingModule = await Test.createTestingModule({
+                providers: [
+                    TemporalWorkerManagerService,
+                    {
+                        provide: TEMPORAL_MODULE_OPTIONS,
+                        useValue: strictOptions,
+                    },
+                    {
+                        provide: TEMPORAL_CONNECTION,
+                        useValue: null,
+                    },
+                    {
+                        provide: TemporalDiscoveryService,
+                        useValue: mockDiscoveryService,
+                    },
+                ],
+            }).compile();
+
+            const svc = module.get<TemporalWorkerManagerService>(TemporalWorkerManagerService);
+            await svc.onModuleInit();
+
+            // Mock startWorkerByTaskQueue to fail
+            jest.spyOn(svc as any, 'startWorkerByTaskQueue').mockRejectedValue(
+                new Error('Worker start failed'),
+            );
+
+            await expect(svc.onApplicationBootstrap()).rejects.toThrow('Worker start failed');
+        });
+
+        it('should throw error when legacy single worker start fails and allowConnectionFailure is false', async () => {
+            const strictSingleWorkerOptions: TemporalOptions = {
+                connection: {
+                    namespace: 'test-namespace',
+                    address: 'localhost:7233',
+                },
+                taskQueue: 'test-queue',
+                worker: {
+                    workflowsPath: './dist/workflows',
+                    autoStart: true,
+                },
+                allowConnectionFailure: false,
+                enableLogger: false,
+            };
+
+            const module: TestingModule = await Test.createTestingModule({
+                providers: [
+                    TemporalWorkerManagerService,
+                    {
+                        provide: TEMPORAL_MODULE_OPTIONS,
+                        useValue: strictSingleWorkerOptions,
+                    },
+                    {
+                        provide: TEMPORAL_CONNECTION,
+                        useValue: null,
+                    },
+                    {
+                        provide: TemporalDiscoveryService,
+                        useValue: mockDiscoveryService,
+                    },
+                ],
+            }).compile();
+
+            const svc = module.get<TemporalWorkerManagerService>(TemporalWorkerManagerService);
+            await svc.onModuleInit();
+
+            // Mock startWorker to fail
+            jest.spyOn(svc, 'startWorker').mockRejectedValue(
+                new Error('Legacy worker start failed'),
+            );
+
+            await expect(svc.onApplicationBootstrap()).rejects.toThrow(
+                'Legacy worker start failed',
+            );
+        });
+    });
+
+    describe('beforeApplicationShutdown - Lifecycle hook coverage', () => {
+        it('should handle graceful shutdown with signal', async () => {
+            await service.onModuleInit();
+            await service.startWorker();
+            await new Promise((resolve) => setTimeout(resolve, 100));
+
+            const loggerSpy = jest.spyOn((service as any).logger, 'info').mockImplementation();
+
+            await service.beforeApplicationShutdown('SIGTERM');
+
+            expect(loggerSpy).toHaveBeenCalledWith('Received shutdown signal: SIGTERM');
+            expect(loggerSpy).toHaveBeenCalledWith('Initiating graceful worker shutdown...');
+            loggerSpy.mockRestore();
+        });
+
+        it('should handle graceful shutdown without signal', async () => {
+            await service.onModuleInit();
+            await service.startWorker();
+            await new Promise((resolve) => setTimeout(resolve, 100));
+
+            const loggerSpy = jest.spyOn((service as any).logger, 'info').mockImplementation();
+
+            await service.beforeApplicationShutdown();
+
+            expect(loggerSpy).toHaveBeenCalledWith('Initiating graceful worker shutdown...');
+            expect(loggerSpy).not.toHaveBeenCalledWith(
+                expect.stringContaining('Received shutdown signal'),
+            );
+            loggerSpy.mockRestore();
+        });
+
+        it('should timeout and warn after shutdown timeout', async () => {
+            const shortTimeoutOptions = {
+                ...mockOptions,
+                shutdownTimeout: 100, // Very short timeout
+            };
+
+            const module: TestingModule = await Test.createTestingModule({
+                providers: [
+                    TemporalWorkerManagerService,
+                    {
+                        provide: TEMPORAL_MODULE_OPTIONS,
+                        useValue: shortTimeoutOptions,
+                    },
+                    {
+                        provide: TEMPORAL_CONNECTION,
+                        useValue: null,
+                    },
+                    {
+                        provide: TemporalDiscoveryService,
+                        useValue: mockDiscoveryService,
+                    },
+                ],
+            }).compile();
+
+            const svc = module.get<TemporalWorkerManagerService>(TemporalWorkerManagerService);
+            await svc.onModuleInit();
+            await svc.startWorker();
+            await new Promise((resolve) => setTimeout(resolve, 100));
+
+            // Mock shutdownWorker to take a long time
+            jest.spyOn(svc as any, 'shutdownWorker').mockImplementation(
+                () => new Promise((resolve) => setTimeout(resolve, 5000)),
+            );
+
+            const loggerSpy = jest.spyOn((svc as any).logger, 'warn').mockImplementation();
+
+            await svc.beforeApplicationShutdown();
+
+            expect(loggerSpy).toHaveBeenCalledWith('Shutdown timeout (100ms) reached');
+            loggerSpy.mockRestore();
+        });
+
+        it('should handle error during graceful shutdown', async () => {
+            await service.onModuleInit();
+            await service.startWorker();
+            await new Promise((resolve) => setTimeout(resolve, 100));
+
+            // Mock shutdownWorker to throw error
+            jest.spyOn(service as any, 'shutdownWorker').mockRejectedValue(
+                new Error('Shutdown error'),
+            );
+
+            const loggerSpy = jest.spyOn((service as any).logger, 'error').mockImplementation();
+
+            await service.beforeApplicationShutdown();
+
+            expect(loggerSpy).toHaveBeenCalledWith(
+                'Error during graceful shutdown',
+                expect.any(Error),
+            );
+            loggerSpy.mockRestore();
+        });
+    });
 });
