@@ -1,4 +1,10 @@
 # Changelog
+## [3.1.7] - 2025-11-12
+
+### Changes
+
+- Update documentation for constants in nestjs-temporal-core (dc2d392)
+
 ## [3.1.6] - 2025-11-12
 
 ### Changes
