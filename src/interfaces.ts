@@ -185,11 +185,29 @@ export interface TemporalOptions extends LoggerConfig {
     autoRestart?: boolean;
     isGlobal?: boolean;
     allowConnectionFailure?: boolean;
+    /**
+     * Enable NestJS shutdown hooks to properly handle SIGTERM/SIGINT signals.
+     * When enabled, the module will register shutdown hooks to ensure graceful worker termination.
+     * @default true
+     */
+    enableShutdownHooks?: boolean;
+    /**
+     * Maximum time in milliseconds to wait for graceful worker shutdown.
+     * After this timeout, the shutdown process will complete anyway to prevent hanging.
+     * @default 30000 (30 seconds)
+     */
+    shutdownTimeout?: number;
 }
 
 /**
  * Advanced configuration options for Temporal Worker creation.
  * Controls worker behavior, concurrency, and performance settings.
+ * This interface includes all options from Temporal SDK's WorkerOptions except for
+ * connection, taskQueue, activities, workflowsPath, and workflowBundle which are
+ * managed by the framework.
+ *
+ * For complete documentation of each option, see:
+ * https://typescript.temporal.io/api/interfaces/worker.WorkerOptions
  *
  * @example Production Configuration
  * ```typescript
@@ -197,23 +215,212 @@ export interface TemporalOptions extends LoggerConfig {
  *   maxConcurrentActivityTaskExecutions: 100,
  *   maxConcurrentWorkflowTaskExecutions: 50,
  *   maxActivitiesPerSecond: 200,
+ *   shutdownGraceTime: '30s',
+ *   shutdownForceTime: '60s',
  *   enableLoggingInReplay: false,
  *   identity: 'production-worker-1'
  * };
  * ```
  */
 export interface WorkerCreateOptions {
-    maxConcurrentActivityTaskExecutions?: number;
-    maxConcurrentWorkflowTaskExecutions?: number;
-    maxConcurrentLocalActivityExecutions?: number;
-    maxActivitiesPerSecond?: number;
-    reuseV8Context?: boolean;
+    // Identity and versioning
+    /**
+     * A human-readable string that can identify your worker.
+     * @default `${process.pid}@${os.hostname()}`
+     */
     identity?: string;
+
+    /**
+     * A string that should be unique to the exact worker code/binary being executed.
+     * @deprecated Use workerDeploymentOptions instead
+     */
     buildId?: string;
-    maxCachedWorkflows?: number;
-    maxConcurrentWorkflowTaskPolls?: number;
+
+    /**
+     * If set true, this worker opts into the worker versioning feature.
+     * @deprecated Use workerDeploymentOptions instead
+     */
+    useVersioning?: boolean;
+
+    /**
+     * Deployment options for the worker.
+     * @experimental
+     */
+    workerDeploymentOptions?: Record<string, unknown>;
+
+    // Shutdown behavior
+    /**
+     * Time to wait for pending tasks to drain after shutdown was requested.
+     * @format number of milliseconds or ms-formatted string
+     * @default 0
+     */
+    shutdownGraceTime?: string | number;
+
+    /**
+     * Time to wait before giving up on graceful shutdown and forcefully terminating the worker.
+     * @format number of milliseconds or ms-formatted string
+     */
+    shutdownForceTime?: string | number;
+
+    // Data conversion
+    /**
+     * Provide a custom DataConverter.
+     */
+    dataConverter?: Record<string, unknown>;
+
+    // Tuning and concurrency
+    /**
+     * Provide a custom WorkerTuner.
+     * Mutually exclusive with maxConcurrentWorkflowTaskExecutions,
+     * maxConcurrentActivityTaskExecutions, and maxConcurrentLocalActivityExecutions.
+     * @experimental
+     */
+    tuner?: Record<string, unknown>;
+
+    /**
+     * Maximum number of Activity tasks to execute concurrently.
+     * Mutually exclusive with tuner.
+     * @default 100 if no tuner is set
+     */
+    maxConcurrentActivityTaskExecutions?: number;
+
+    /**
+     * Maximum number of Local Activity tasks to execute concurrently.
+     * Mutually exclusive with tuner.
+     * @default 100 if no tuner is set
+     */
+    maxConcurrentLocalActivityExecutions?: number;
+
+    /**
+     * Maximum number of concurrent Activity task polls.
+     * @default 5
+     */
     maxConcurrentActivityTaskPolls?: number;
+
+    /**
+     * Whether or not to poll on the Activity task queue.
+     * @default true
+     */
+    enableNonLocalActivities?: boolean;
+
+    // Activity rate limiting
+    /**
+     * Limits the number of Activities per second that this Worker will process.
+     */
+    maxActivitiesPerSecond?: number;
+
+    /**
+     * Sets the maximum number of activities per second the task queue will dispatch (server-side).
+     */
+    maxTaskQueueActivitiesPerSecond?: number;
+
+    // Workflow concurrency and polling
+    /**
+     * Maximum number of Workflow Tasks to execute concurrently.
+     * Mutually exclusive with tuner.
+     * @default 100 if no tuner is set
+     */
+    maxConcurrentWorkflowTaskExecutions?: number;
+
+    /**
+     * Maximum number of concurrent Workflow task polls.
+     * @default 5
+     */
+    maxConcurrentWorkflowTaskPolls?: number;
+
+    /**
+     * Ratio of non-sticky to sticky workflow task polls.
+     */
+    nonStickyToStickyPollRatio?: number;
+
+    // Workflow caching and threading
+    /**
+     * Maximum number of cached workflows.
+     * @default 600
+     */
+    maxCachedWorkflows?: number;
+
+    /**
+     * Timeout for sticky queue schedule to start.
+     * @format number of milliseconds or ms-formatted string
+     * @default 5s
+     */
+    stickyQueueScheduleToStartTimeout?: string | number;
+
+    /**
+     * Number of threads for workflow execution.
+     * @default 2
+     */
+    workflowThreadPoolSize?: number;
+
+    /**
+     * Whether to reuse V8 context between workflow executions.
+     * @default false
+     */
+    reuseV8Context?: boolean;
+
+    // Heartbeat configuration
+    /**
+     * Maximum heartbeat throttle interval.
+     * @format number of milliseconds or ms-formatted string
+     */
+    maxHeartbeatThrottleInterval?: string | number;
+
+    /**
+     * Default heartbeat throttle interval.
+     * @format number of milliseconds or ms-formatted string
+     */
+    defaultHeartbeatThrottleInterval?: string | number;
+
+    // Debugging and observability
+    /**
+     * Enable debug mode.
+     */
+    debugMode?: boolean;
+
+    /**
+     * Enable logging in replay.
+     * @default false
+     */
     enableLoggingInReplay?: boolean;
+
+    /**
+     * Show stack trace sources in error messages.
+     */
+    showStackTraceSources?: boolean;
+
+    // Interceptors
+    /**
+     * Activity interceptors.
+     */
+    interceptors?: {
+        activityInbound?: unknown[];
+        activity?: unknown[];
+        workflowModules?: string[];
+    };
+
+    // Sink configuration
+    /**
+     * Custom sink function for workflow logs and metrics.
+     */
+    sinks?: Record<string, unknown>;
+
+    // Bundler options (when using workflowsPath)
+    /**
+     * Options for the Webpack bundler when using workflowsPath.
+     */
+    bundlerOptions?: Record<string, unknown>;
+
+    // Additional worker options
+    /**
+     * Enable SDK metrics.
+     */
+    enableSDKTracing?: boolean;
+
+    /**
+     * Enable opentelemetry.
+     */
+    enableOpenTelemetry?: boolean;
 }
 
 /**
@@ -493,25 +700,6 @@ export interface QueryOptions {
  * }
  * ```
  */
-
-/**
- * Aggregate statistics about all managed schedules.
- *
- * @example
- * ```typescript
- * const stats = scheduleService.getScheduleStats();
- * console.log(`Active schedules: ${stats.active}/${stats.total}`);
- * if (stats.errors > 0) {
- *   console.warn(`${stats.errors} schedules have errors`);
- * }
- * ```
- */
-export interface ScheduleStats {
-    total: number;
-    active: number;
-    inactive: number;
-    errors: number;
-}
 
 /**
  * Information about signal methods discovered in workflow classes.
@@ -1317,7 +1505,16 @@ export interface ScheduleServiceHealth {
 }
 
 /**
- * Schedule statistics
+ * Aggregate statistics about all managed schedules.
+ *
+ * @example
+ * ```typescript
+ * const stats = scheduleService.getScheduleStats();
+ * console.log(`Active schedules: ${stats.active}/${stats.total}`);
+ * if (stats.errors > 0) {
+ *   console.warn(`${stats.errors} schedules have errors`);
+ * }
+ * ```
  */
 export interface ScheduleServiceStats {
     total: number;

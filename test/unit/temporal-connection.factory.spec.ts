@@ -553,7 +553,7 @@ describe('TemporalConnectionFactory', () => {
     });
 
     describe('cleanup', () => {
-        it('should close all worker connections and clear caches', async () => {
+        it('should NOT close worker connections (managed by worker lifecycle) but clear caches', async () => {
             // Create some connections first
             await factory.createClient(mockTemporalOptions);
             await factory.createWorkerConnection(mockTemporalOptions);
@@ -568,9 +568,9 @@ describe('TemporalConnectionFactory', () => {
 
             await factory.cleanup();
 
-            // Verify all connections were attempted to be closed
-            expect(mockNativeConnection.close).toHaveBeenCalled();
-            expect(mockConnectionWithError.close).toHaveBeenCalled();
+            // Worker connections should NOT be closed (workers manage their own lifecycle)
+            expect(mockNativeConnection.close).not.toHaveBeenCalled();
+            expect(mockConnectionWithError.close).not.toHaveBeenCalled();
 
             // Verify caches are cleared
             expect((factory as any).clientConnectionCache.size).toBe(0);
@@ -586,7 +586,7 @@ describe('TemporalConnectionFactory', () => {
             expect((factory as any).workerConnectionCache.size).toBe(0);
         });
 
-        it('should handle cleanup with mixed success and failure scenarios', async () => {
+        it('should clear caches but NOT close worker connections (managed by worker lifecycle)', async () => {
             // Create some connections first
             await factory.createClient(mockTemporalOptions);
             await factory.createWorkerConnection(mockTemporalOptions);
@@ -606,12 +606,12 @@ describe('TemporalConnectionFactory', () => {
 
             await factory.cleanup();
 
-            // Verify all connections were attempted to be closed
-            expect(mockNativeConnection.close).toHaveBeenCalled();
-            expect(mockConnectionSuccess.close).toHaveBeenCalled();
-            expect(mockConnectionFailure.close).toHaveBeenCalled();
+            // Worker connections should NOT be closed (workers manage their own lifecycle)
+            expect(mockNativeConnection.close).not.toHaveBeenCalled();
+            expect(mockConnectionSuccess.close).not.toHaveBeenCalled();
+            expect(mockConnectionFailure.close).not.toHaveBeenCalled();
 
-            // Verify caches are cleared despite some failures
+            // Verify caches are cleared
             expect((factory as any).clientConnectionCache.size).toBe(0);
             expect((factory as any).workerConnectionCache.size).toBe(0);
         });

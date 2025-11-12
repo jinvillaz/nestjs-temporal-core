@@ -1,4 +1,4 @@
-import { Injectable, Logger, OnModuleInit, OnModuleDestroy, Inject } from '@nestjs/common';
+import { Injectable, OnModuleInit, OnModuleDestroy, Inject } from '@nestjs/common';
 import { DiscoveryService } from '@nestjs/core';
 import { ScheduleClient, ScheduleHandle } from '@temporalio/client';
 import { TEMPORAL_MODULE_OPTIONS, TEMPORAL_CLIENT } from '../constants';
@@ -21,15 +21,14 @@ import {
     ScheduleOptions,
 } from '../interfaces';
 import { TemporalMetadataAccessor } from './temporal-metadata.service';
-import { TemporalLogger } from '../utils/logger';
+import { createLogger, TemporalLogger } from '../utils/logger';
 
 /**
  * Service for managing Temporal schedules including creating, updating, and monitoring scheduled workflows
  */
 @Injectable()
 export class TemporalScheduleService implements OnModuleInit, OnModuleDestroy {
-    private readonly logger = new Logger(TemporalScheduleService.name);
-    private readonly temporalLogger = new TemporalLogger(TemporalScheduleService.name);
+    private readonly logger: TemporalLogger;
     private scheduleClient?: ScheduleClient;
     private scheduleHandles = new Map<string, ScheduleHandle>();
     private isInitialized = false;
@@ -41,21 +40,27 @@ export class TemporalScheduleService implements OnModuleInit, OnModuleDestroy {
         private readonly client: { schedule?: ScheduleClient; connection?: TemporalConnection },
         private readonly discoveryService: DiscoveryService,
         private readonly metadataAccessor: TemporalMetadataAccessor,
-    ) {}
+    ) {
+        this.logger = createLogger(TemporalScheduleService.name, {
+            enableLogger: options.enableLogger,
+            logLevel: options.logLevel,
+        });
+    }
 
     /**
      * Initialize the schedule service
      */
     async onModuleInit(): Promise<void> {
         try {
-            this.logger.log('Initializing Temporal Schedule Service...');
+            this.logger.info('Initializing Temporal Schedule Service...');
             await this.initializeScheduleClient();
             await this.discoverAndRegisterSchedules();
             this.isInitialized = true;
-            this.logger.log('Temporal Schedule Service initialized successfully');
+            this.logger.info('Temporal Schedule Service initialized successfully');
         } catch (error) {
             this.logger.error(
                 `Failed to initialize Temporal Schedule Service: ${error instanceof Error ? error.message : 'Unknown error'}`,
+                error,
             );
             throw error;
         }
@@ -66,13 +71,14 @@ export class TemporalScheduleService implements OnModuleInit, OnModuleDestroy {
      */
     async onModuleDestroy(): Promise<void> {
         try {
-            this.logger.log('Shutting down Temporal Schedule Service...');
+            this.logger.info('Shutting down Temporal Schedule Service...');
             this.scheduleHandles.clear();
             this.isInitialized = false;
-            this.logger.log('Temporal Schedule Service shut down successfully');
+            this.logger.info('Temporal Schedule Service shut down successfully');
         } catch (error) {
             this.logger.error(
                 `Error during schedule service shutdown: ${error instanceof Error ? error.message : 'Unknown error'}`,
+                error,
             );
         }
     }
@@ -85,7 +91,7 @@ export class TemporalScheduleService implements OnModuleInit, OnModuleDestroy {
             // Check if the client has schedule support
             if (this.client?.schedule) {
                 this.scheduleClient = this.client.schedule;
-                this.temporalLogger.debug('Schedule client initialized from existing client');
+                this.logger.debug('Schedule client initialized from existing client');
                 return {
                     success: true,
                     client: this.scheduleClient,
@@ -98,7 +104,7 @@ export class TemporalScheduleService implements OnModuleInit, OnModuleDestroy {
                         connection: this.client.connection as never,
                         namespace: this.options.connection?.namespace || 'default',
                     });
-                    this.temporalLogger.debug('Schedule client initialized successfully');
+                    this.logger.debug('Schedule client initialized successfully');
                     return {
                         success: true,
                         client: this.scheduleClient,
@@ -117,7 +123,7 @@ export class TemporalScheduleService implements OnModuleInit, OnModuleDestroy {
             }
         } catch (error) {
             const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-            this.logger.error(`Failed to initialize schedule client: ${errorMessage}`);
+            this.logger.error(`Failed to initialize schedule client: ${errorMessage}`, error);
             this.scheduleClient = undefined;
             return {
                 success: false,
@@ -137,14 +143,10 @@ export class TemporalScheduleService implements OnModuleInit, OnModuleDestroy {
         try {
             // Skip automatic discovery for now since schedule decorators are not implemented
             // This prevents the gRPC errors from trying to create schedules for every provider
-            this.temporalLogger.debug(
-                'Schedule discovery skipped - schedule decorators not implemented',
-            );
+            this.logger.debug('Schedule discovery skipped - schedule decorators not implemented');
 
             const duration = Date.now() - startTime;
-            this.temporalLogger.debug(
-                `Discovered and registered ${discoveredCount} scheduled workflows`,
-            );
+            this.logger.debug(`Discovered and registered ${discoveredCount} scheduled workflows`);
 
             return {
                 success: true,
@@ -154,7 +156,7 @@ export class TemporalScheduleService implements OnModuleInit, OnModuleDestroy {
             };
         } catch (error) {
             const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-            this.logger.error(`Failed to discover schedules: ${errorMessage}`);
+            this.logger.error(`Failed to discover schedules: ${errorMessage}`, error);
             return {
                 success: false,
                 discoveredCount: 0,
@@ -210,7 +212,7 @@ export class TemporalScheduleService implements OnModuleInit, OnModuleDestroy {
 
             this.scheduleHandles.set(scheduleId, scheduleHandle);
 
-            this.temporalLogger.debug(
+            this.logger.debug(
                 `Registered scheduled workflow: ${scheduleId} with type: ${workflowType}`,
             );
 
@@ -221,7 +223,7 @@ export class TemporalScheduleService implements OnModuleInit, OnModuleDestroy {
             };
         } catch (error) {
             const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-            this.logger.error(`Failed to register scheduled workflow: ${errorMessage}`);
+            this.logger.error(`Failed to register scheduled workflow: ${errorMessage}`, error);
             return {
                 success: false,
                 scheduleId: (scheduleMetadata.scheduleId as string) || `${metatype.name}-schedule`,
@@ -397,7 +399,7 @@ export class TemporalScheduleService implements OnModuleInit, OnModuleDestroy {
             const scheduleHandle = await this.scheduleClient!.create(options as never);
             this.scheduleHandles.set(options.scheduleId, scheduleHandle);
 
-            this.temporalLogger.debug(`Created schedule: ${options.scheduleId}`);
+            this.logger.debug(`Created schedule: ${options.scheduleId}`);
 
             return {
                 success: true,
@@ -406,7 +408,10 @@ export class TemporalScheduleService implements OnModuleInit, OnModuleDestroy {
             };
         } catch (error) {
             const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-            this.logger.error(`Failed to create schedule ${options.scheduleId}: ${errorMessage}`);
+            this.logger.error(
+                `Failed to create schedule ${options.scheduleId}: ${errorMessage}`,
+                error,
+            );
             return {
                 success: false,
                 scheduleId: options.scheduleId,
@@ -437,7 +442,7 @@ export class TemporalScheduleService implements OnModuleInit, OnModuleDestroy {
             };
         } catch (error) {
             const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-            this.logger.error(`Failed to get schedule ${scheduleId}: ${errorMessage}`);
+            this.logger.error(`Failed to get schedule ${scheduleId}: ${errorMessage}`, error);
             return {
                 success: false,
                 error: error instanceof Error ? error : new Error(errorMessage),

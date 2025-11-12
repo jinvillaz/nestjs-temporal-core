@@ -1181,7 +1181,7 @@ describe('TemporalService', () => {
 
             // Call the private method directly
             const logSpy = jest
-                .spyOn((service as any).temporalLogger, 'debug')
+                .spyOn((service as any).logger, 'debug')
                 .mockImplementation();
 
             (service as any).logServiceStatus();

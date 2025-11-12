@@ -3,6 +3,7 @@ import {
     OnModuleInit,
     OnModuleDestroy,
     OnApplicationBootstrap,
+    BeforeApplicationShutdown,
     Inject,
 } from '@nestjs/common';
 import { Worker, NativeConnection } from '@temporalio/worker';
@@ -32,12 +33,13 @@ import { createLogger, TemporalLogger } from '../utils/logger';
  * - Worker initialization and configuration (single or multiple workers)
  * - Activity discovery and registration
  * - Worker health monitoring
- * - Graceful shutdown handling
+ * - Graceful shutdown handling with timeout protection
  * - Support for multiple task queues
+ * - Proper process signal handling (SIGTERM/SIGINT)
  */
 @Injectable()
 export class TemporalWorkerManagerService
-    implements OnModuleInit, OnModuleDestroy, OnApplicationBootstrap
+    implements OnModuleInit, OnModuleDestroy, OnApplicationBootstrap, BeforeApplicationShutdown
 {
     private readonly logger: TemporalLogger;
 
@@ -125,24 +127,77 @@ export class TemporalWorkerManagerService
     }
 
     async onApplicationBootstrap(): Promise<void> {
-        // Start multiple workers if configured
-        if (this.options.workers && this.options.workers.length > 0) {
-            for (const [taskQueue] of this.workers.entries()) {
-                const workerDef = this.options.workers.find((w) => w.taskQueue === taskQueue);
-                if (workerDef?.autoStart !== false) {
-                    await this.startWorkerByTaskQueue(taskQueue);
+        try {
+            // Start multiple workers if configured
+            if (this.options.workers && this.options.workers.length > 0) {
+                this.logger.info('Starting configured workers...');
+                const startPromises: Promise<void>[] = [];
+
+                for (const [taskQueue] of this.workers.entries()) {
+                    const workerDef = this.options.workers.find((w) => w.taskQueue === taskQueue);
+                    if (workerDef?.autoStart !== false) {
+                        startPromises.push(
+                            this.startWorkerByTaskQueue(taskQueue).catch((error) => {
+                                this.logger.error(`Failed to start worker '${taskQueue}'`, error);
+                                if (this.options.allowConnectionFailure !== true) {
+                                    throw error;
+                                }
+                            }),
+                        );
+                    }
                 }
+
+                await Promise.all(startPromises);
+                this.logger.info(`Started ${startPromises.length} workers successfully`);
+                return;
             }
-            return;
+
+            // Legacy single worker auto-start
+            if (this.worker && this.options.worker?.autoStart !== false) {
+                this.logger.info('Starting worker...');
+                await this.startWorker();
+                this.logger.info('Worker started successfully');
+            }
+        } catch (error) {
+            this.logger.error('Error during worker startup', error);
+            if (this.options.allowConnectionFailure !== true) {
+                throw error;
+            }
+        }
+    }
+
+    /**
+     * BeforeApplicationShutdown lifecycle hook
+     * Initiates graceful shutdown before the application fully shuts down
+     * This ensures workers have time to complete in-flight tasks
+     */
+    async beforeApplicationShutdown(signal?: string): Promise<void> {
+        if (signal) {
+            this.logger.info(`Received shutdown signal: ${signal}`);
         }
 
-        // Legacy single worker auto-start
-        if (this.worker && this.options.worker?.autoStart !== false) {
-            await this.startWorker();
+        this.logger.info('Initiating graceful worker shutdown...');
+
+        // Start the shutdown process with timeout protection
+        // This is the same as shutdownWorker but with an explicit timeout
+        const shutdownTimeout = this.options.shutdownTimeout || 30000;
+        const shutdownPromise = this.shutdownWorker();
+        const timeoutPromise = new Promise<void>((resolve) => {
+            setTimeout(() => {
+                this.logger.warn(`Shutdown timeout (${shutdownTimeout}ms) reached`);
+                resolve();
+            }, shutdownTimeout);
+        });
+
+        try {
+            await Promise.race([shutdownPromise, timeoutPromise]);
+        } catch (error) {
+            this.logger.error('Error during graceful shutdown', error);
         }
     }
 
     async onModuleDestroy(): Promise<void> {
+        // If shutdown was already initiated by beforeApplicationShutdown, this will be a no-op
         await this.shutdownWorker();
     }
 
@@ -380,6 +435,65 @@ export class TemporalWorkerManagerService
         }
 
         try {
+            this.logger.info(`Stopping worker for '${taskQueue}'...`);
+
+            try {
+                // Check worker state before attempting shutdown
+                const workerState = workerInstance.worker.getState();
+                this.logger.debug(`Worker '${taskQueue}' current state: ${workerState}`);
+
+                // Only attempt shutdown if worker is in a state that allows it
+                if (
+                    workerState === 'INITIALIZED' ||
+                    workerState === 'RUNNING' ||
+                    workerState === 'FAILED'
+                ) {
+                    await workerInstance.worker.shutdown();
+                    this.logger.info(`Worker for '${taskQueue}' stopped successfully`);
+                } else if (
+                    workerState === 'STOPPING' ||
+                    workerState === 'DRAINING' ||
+                    workerState === 'DRAINED'
+                ) {
+                    this.logger.info(
+                        `Worker for '${taskQueue}' is already shutting down (state: ${workerState})`,
+                    );
+                    // Wait for the worker to complete shutdown
+                    // The worker.run() promise will resolve when shutdown completes
+                } else if (workerState === 'STOPPED') {
+                    this.logger.debug(`Worker for '${taskQueue}' is already stopped`);
+                }
+            } catch (shutdownError: unknown) {
+                // Handle race condition where worker state changes between check and shutdown
+                const errorMessage =
+                    shutdownError instanceof Error ? shutdownError.message : String(shutdownError);
+                if (
+                    errorMessage.includes('Not running') ||
+                    errorMessage.includes('DRAINING') ||
+                    errorMessage.includes('STOPPING')
+                ) {
+                    this.logger.debug(`Worker '${taskQueue}' is already shutting down or stopped`);
+                } else {
+                    // Re-throw unexpected errors
+                    throw shutdownError;
+                }
+            }
+
+            workerInstance.isRunning = false;
+            workerInstance.startedAt = null;
+        } catch (error) {
+            workerInstance.lastError = this.extractErrorMessage(error);
+            this.logger.warn(`Error while stopping worker for '${taskQueue}'`, error);
+            // Mark as not running even if shutdown failed
+            workerInstance.isRunning = false;
+        }
+    }
+
+    /**
+     * Get the native connection for creating custom workers
+```
+
+        try {
             this.logger.info(`Stopping worker for task queue '${taskQueue}'...`);
             await workerInstance.worker.shutdown();
             workerInstance.isRunning = false;
@@ -588,14 +702,38 @@ export class TemporalWorkerManagerService
 
         try {
             this.logger.info('Stopping Temporal worker...');
-            await this.worker.shutdown();
+
+            // Check worker state before attempting shutdown
+            const workerState = this.worker.getState();
+            this.logger.debug(`Worker current state: ${workerState}`);
+
+            // Only attempt shutdown if worker is in a state that allows it
+            if (
+                workerState === 'INITIALIZED' ||
+                workerState === 'RUNNING' ||
+                workerState === 'FAILED'
+            ) {
+                await this.worker.shutdown();
+                this.logger.info('Temporal worker stopped successfully');
+            } else if (
+                workerState === 'STOPPING' ||
+                workerState === 'DRAINING' ||
+                workerState === 'DRAINED'
+            ) {
+                this.logger.info(`Worker is already shutting down (state: ${workerState})`);
+                // Wait for the worker to complete shutdown
+                // The worker.run() promise will resolve when shutdown completes
+            } else if (workerState === 'STOPPED') {
+                this.logger.debug('Worker is already stopped');
+            }
+
             this.isRunning = false;
             this.startedAt = null;
-
-            this.logger.info('Temporal worker stopped successfully');
         } catch (error) {
             this.lastError = this.extractErrorMessage(error);
-            this.logger.error('Failed to stop worker gracefully', error);
+            this.logger.warn('Error stopping worker gracefully', error);
+            // Mark as not running even if shutdown failed
+            this.isRunning = false;
         }
     }
 
@@ -843,6 +981,7 @@ export class TemporalWorkerManagerService
      * Create connection to Temporal server
      */
     private async createConnection(): Promise<void> {
+        // If a valid connection was injected, use it
         if (this.injectedConnection) {
             this.connection = this.injectedConnection;
             this.logger.debug('Using injected connection');
@@ -1118,18 +1257,80 @@ export class TemporalWorkerManagerService
             // Shutdown multiple workers if they exist
             if (this.workers.size > 0) {
                 this.logger.info(`Shutting down ${this.workers.size} workers...`);
+                const shutdownPromises: Promise<void>[] = [];
+
                 for (const [taskQueue, workerInstance] of this.workers.entries()) {
-                    try {
-                        if (workerInstance.isRunning) {
-                            this.logger.debug(`Stopping worker for '${taskQueue}'...`);
-                            await workerInstance.worker.shutdown();
-                            workerInstance.isRunning = false;
+                    const shutdownPromise = (async () => {
+                        try {
+                            if (workerInstance.isRunning && workerInstance.worker) {
+                                this.logger.debug(`Stopping worker for '${taskQueue}'...`);
+
+                                try {
+                                    // Check worker state before attempting shutdown
+                                    const workerState = workerInstance.worker.getState();
+
+                                    // Only attempt shutdown if worker is in a state that allows it
+                                    if (
+                                        workerState === 'INITIALIZED' ||
+                                        workerState === 'RUNNING' ||
+                                        workerState === 'FAILED'
+                                    ) {
+                                        await workerInstance.worker.shutdown();
+                                        this.logger.debug(
+                                            `Worker '${taskQueue}' shut down successfully`,
+                                        );
+                                    } else if (
+                                        workerState === 'STOPPING' ||
+                                        workerState === 'DRAINING' ||
+                                        workerState === 'DRAINED'
+                                    ) {
+                                        this.logger.debug(
+                                            `Worker '${taskQueue}' is already shutting down (state: ${workerState})`,
+                                        );
+                                    } else if (workerState === 'STOPPED') {
+                                        this.logger.debug(
+                                            `Worker '${taskQueue}' is already stopped`,
+                                        );
+                                    }
+                                } catch (shutdownError: unknown) {
+                                    // Handle race condition where worker state changes between check and shutdown
+                                    const errorMessage =
+                                        shutdownError instanceof Error
+                                            ? shutdownError.message
+                                            : String(shutdownError);
+                                    if (
+                                        errorMessage.includes('Not running') ||
+                                        errorMessage.includes('DRAINING') ||
+                                        errorMessage.includes('STOPPING')
+                                    ) {
+                                        this.logger.debug(
+                                            `Worker '${taskQueue}' is already shutting down or stopped`,
+                                        );
+                                    } else {
+                                        // Log but don't fail shutdown for unexpected errors
+                                        this.logger.warn(
+                                            `Unexpected error shutting down worker '${taskQueue}': ${errorMessage}`,
+                                            shutdownError instanceof Error
+                                                ? shutdownError.stack
+                                                : undefined,
+                                        );
+                                    }
+                                }
+
+                                workerInstance.isRunning = false;
+                            }
+                        } catch (error) {
+                            this.logger.warn(`Error shutting down worker '${taskQueue}'`, error);
                         }
-                    } catch (error) {
-                        this.logger.warn(`Error shutting down worker '${taskQueue}'`, error);
-                    }
+                    })();
+
+                    shutdownPromises.push(shutdownPromise);
                 }
+
+                // Wait for all workers to shutdown in parallel
+                await Promise.allSettled(shutdownPromises);
                 this.workers.clear();
+                this.logger.info('All workers shut down successfully');
             }
 
             // Shutdown legacy single worker if it exists
