@@ -8,6 +8,8 @@ on:
 permissions:
     contents: write
     pull-requests: read
+    pages: write
+    id-token: write
 
 jobs:
     release:
@@ -104,6 +106,11 @@ jobs:
             - name: Build package
               run: npm run build
 
+            - name: Generate documentation
+              run: |
+                  npm run docs:generate
+                  touch docs/.nojekyll
+
             - name: Commit version bump
               run: |
                   git add package.json package-lock.json CHANGELOG.md
@@ -131,5 +138,16 @@ jobs:
                       ## Changes in v${{ env.NEW_VERSION }}
 
                       See [CHANGELOG.md](https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md) for details.
+
+                      📚 [View Documentation](https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }})
                   draft: false
                   prerelease: false
+
+            - name: Upload documentation to GitHub Pages
+              uses: actions/upload-pages-artifact@v3
+              with:
+                  path: docs
+
+            - name: Deploy to GitHub Pages
+              id: deployment
+              uses: actions/deploy-pages@v4
