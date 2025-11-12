@@ -59,7 +59,7 @@ before the handle is returned.</p>
 </div><div class="tsd-comment tsd-typography"></div></li><li><span><span class="tsd-kind-parameter">options</span>: <span class="tsd-signature-type">WorkflowUpdateOptions</span> <span class="tsd-signature-symbol">&amp;</span> <span class="tsd-signature-symbol">{</span> <span class="tsd-kind-property">args</span><span class="tsd-signature-symbol">:</span> <a class="tsd-signature-type tsd-kind-type-parameter" href="#startupdateargs">Args</a><span class="tsd-signature-symbol">;</span> <span class="tsd-kind-property">waitForStage</span><span class="tsd-signature-symbol">:</span> <span class="tsd-signature-type">&quot;ACCEPTED&quot;</span> <span class="tsd-signature-symbol">}</span></span><div class="tsd-comment tsd-typography"><p>update arguments, and update lifecycle stage to wait for</p>
 <p>Currently, startUpdate always waits until a worker is accepting tasks for the workflow and the
 update is accepted or rejected, and the options object must be at least</p>
-<pre><code class="ts"><span class="hl-1">{</span><br/><span class="hl-1">  </span><span class="hl-12">waitForStage</span><span class="hl-1">: </span><span class="hl-5">WorkflowUpdateStage</span><span class="hl-1">.</span><span class="hl-7">ACCEPTED</span><br/><span class="hl-1">}</span>
+<pre><code class="ts"><span class="hl-1">{</span><br/><span class="hl-1">  </span><span class="hl-11">waitForStage</span><span class="hl-1">: </span><span class="hl-5">WorkflowUpdateStage</span><span class="hl-1">.</span><span class="hl-7">ACCEPTED</span><br/><span class="hl-1">}</span>
 </code><button type="button">Copy</button></pre>
 
 <p>If the update takes arguments, then the options object must additionally contain an <code>args</code>
