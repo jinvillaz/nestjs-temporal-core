@@ -3148,25 +3148,23 @@ describe('TemporalWorkerManagerService', () => {
 
             // Create a worker instance that will throw in the outer catch
             const workerInstance = (multiService as any).workers.get('test-queue-1');
-            workerInstance.isRunning = true;
 
-            // Mock the worker to throw an error in a way that triggers outer catch
-            const errorWorker = {
-                getState: jest.fn().mockImplementation(() => {
-                    throw new Error('Outer catch error');
-                }),
-                shutdown: jest.fn().mockResolvedValue(undefined),
-            };
-            workerInstance.worker = errorWorker;
+            // Use a getter that throws to trigger the outer catch block (line 1323)
+            Object.defineProperty(workerInstance, 'isRunning', {
+                get: function () {
+                    throw new Error('Outer catch error accessing isRunning');
+                },
+                configurable: true,
+            });
 
             const loggerSpy = jest.spyOn((multiService as any).logger, 'warn').mockImplementation();
 
             await multiService.onModuleDestroy();
 
-            // The logger is called with "Unexpected error shutting down worker" message
+            // This should trigger line 1323: this.logger.warn(`Error shutting down worker '${taskQueue}'`, error);
             expect(loggerSpy).toHaveBeenCalledWith(
-                expect.stringContaining("shutting down worker 'test-queue-1'"),
-                expect.anything(),
+                "Error shutting down worker 'test-queue-1'",
+                expect.any(Error),
             );
             loggerSpy.mockRestore();
         });
