@@ -1,9 +1,18 @@
 # NestJS Temporal Core
 
+<div align="center">
+
 A comprehensive NestJS integration framework for Temporal.io that provides enterprise-ready workflow orchestration with automatic discovery, declarative decorators, and robust monitoring capabilities.
 
 [![npm version](https://badge.fury.io/js/nestjs-temporal-core.svg)](https://badge.fury.io/js/nestjs-temporal-core)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![npm downloads](https://img.shields.io/npm/dm/nestjs-temporal-core.svg)](https://www.npmjs.com/package/nestjs-temporal-core)
+
+[Documentation](https://harsh-simform.github.io/nestjs-temporal-core/) • [NPM](https://www.npmjs.com/package/nestjs-temporal-core) • [GitHub](https://github.com/harsh-simform/nestjs-temporal-core) • [Examples](#examples)
+
+</div>
+
+---
 
 ## Table of Contents
 
@@ -13,13 +22,21 @@ A comprehensive NestJS integration framework for Temporal.io that provides enter
 - [Quick Start](#quick-start)
 - [Module Variants](#module-variants)
 - [Configuration](#configuration)
+  - [Basic Configuration](#basic-configuration)
+  - [Multiple Workers](#multiple-workers-configuration)
+  - [Async Configuration](#async-configuration)
+  - [TLS Configuration](#tls-configuration-temporal-cloud)
 - [Core Concepts](#core-concepts)
+  - [Activities](#activities)
+  - [Workflows](#workflows)
+  - [Signals and Queries](#signals-and-queries)
 - [API Reference](#api-reference)
 - [Examples](#examples)
 - [Advanced Usage](#advanced-usage)
-- [Health Monitoring](#health-monitoring)
 - [Best Practices](#best-practices)
+- [Health Monitoring](#health-monitoring)
 - [Troubleshooting](#troubleshooting)
+- [Migration Guide](#migration-guide)
 - [Contributing](#contributing)
 - [License](#license)
 
@@ -37,6 +54,8 @@ NestJS Temporal Core bridges NestJS's powerful dependency injection system with 
 - 📦 **Modular Architecture**: Separate modules for client, worker, activities, and schedules
 - 🔄 **Production Grade**: Connection pooling, graceful shutdown, and fault tolerance
 
+[🔝 Back to top](#table-of-contents)
+
 ## Features
 
 - ✨ **Declarative Decorators**: `@Activity()` and `@ActivityMethod()` for clean activity definitions
@@ -48,6 +67,9 @@ NestJS Temporal Core bridges NestJS's powerful dependency injection system with 
 - 📊 **Performance Monitoring**: Built-in metrics and performance tracking
 - 🔚 **Graceful Shutdown**: Clean resource cleanup and connection termination
 - 📦 **Modular Design**: Use only what you need (client-only, worker-only, etc.)
+- 🔄 **Multiple Workers**: Support for multiple workers with different task queues
+
+[🔝 Back to top](#table-of-contents)
 
 ## Installation
 
@@ -57,17 +79,17 @@ npm install nestjs-temporal-core @temporalio/client @temporalio/worker @temporal
 
 ### Peer Dependencies
 
-The package requires the following peer dependencies:
-
 ```bash
 npm install @nestjs/common @nestjs/core reflect-metadata rxjs
 ```
+
+[🔝 Back to top](#table-of-contents)
 
 ## Quick Start
 
 ### 1. Enable Shutdown Hooks
 
-First, enable shutdown hooks in your `main.ts` for proper Temporal resource cleanup:
+Enable shutdown hooks in your `main.ts` for proper Temporal resource cleanup:
 
 ```typescript
 // main.ts
@@ -76,10 +98,10 @@ import { AppModule } from './app.module';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
-  
+
   // Required for graceful Temporal connection cleanup
   app.enableShutdownHooks();
-  
+
   await app.listen(3000);
 }
 bootstrap();
@@ -134,15 +156,15 @@ export interface PaymentData {
 @Injectable()
 @Activity({ name: 'payment-activities' })
 export class PaymentActivity {
-  
+
   @ActivityMethod('processPayment')
   async processPayment(data: PaymentData): Promise<{ transactionId: string }> {
     // Payment processing logic with full NestJS DI support
     console.log(`Processing payment: $${data.amount} ${data.currency}`);
-    
+
     // Simulate payment processing
     await new Promise(resolve => setTimeout(resolve, 1000));
-    
+
     return { transactionId: `txn_${Date.now()}` };
   }
 
@@ -193,7 +215,7 @@ export async function processPaymentWorkflow(data: PaymentData): Promise<any> {
     const result = await processPayment(data);
     transactionId = result.transactionId;
     status = 'completed';
-    
+
     return {
       success: true,
       transactionId,
@@ -201,12 +223,12 @@ export async function processPaymentWorkflow(data: PaymentData): Promise<any> {
     };
   } catch (error) {
     status = 'failed';
-    
+
     // Compensate if needed
     if (transactionId) {
       await refundPayment(transactionId);
     }
-    
+
     throw error;
   }
 }
@@ -230,7 +252,7 @@ export class PaymentService {
     const result = await this.temporal.startWorkflow(
       'processPaymentWorkflow',
       [paymentData],
-      { 
+      {
         workflowId: `payment-${Date.now()}`,
         taskQueue: 'my-task-queue',
       }
@@ -248,7 +270,7 @@ export class PaymentService {
       workflowId,
       'getPaymentStatus'
     );
-    
+
     return { status: statusResult.result };
   }
 
@@ -262,6 +284,8 @@ export class PaymentService {
   }
 }
 ```
+
+[🔝 Back to top](#table-of-contents)
 
 ## Module Variants
 
@@ -338,7 +362,7 @@ TemporalSchedulesModule.register({
 })
 ```
 
-## Configuration
+[🔝 Back to top](#table-of-contents)
 
 ## Configuration
 
@@ -616,6 +640,8 @@ interface TemporalOptions {
 }
 ```
 
+[🔝 Back to top](#table-of-contents)
+
 ## Core Concepts
 
 ### Activities
@@ -637,7 +663,7 @@ export class OrderActivity {
     private readonly orderRepository: OrderRepository,
     private readonly emailService: EmailService,
   ) {}
-  
+
   @ActivityMethod('createOrder')
   async createOrder(orderData: CreateOrderData): Promise<Order> {
     // Database operations with full DI support
@@ -779,7 +805,7 @@ export class OrderService {
       workflowId,
       'getOrderStatus'
     );
-    
+
     return result.result;
   }
 
@@ -793,416 +819,46 @@ export class OrderService {
 }
 ```
 
+[🔝 Back to top](#table-of-contents)
+
 ## API Reference
+
+For detailed API documentation, visit the [Full API Documentation](https://harsh-simform.github.io/nestjs-temporal-core/).
 
 ### TemporalService
 
-The main unified service providing access to all Temporal functionality:
+The main unified service providing access to all Temporal functionality. See the [API Documentation](https://harsh-simform.github.io/nestjs-temporal-core/) for complete method signatures and examples.
 
-```typescript
-class TemporalService {
-  /**
-   * Start a workflow execution
-   * @param workflowType - Name of the workflow function
-   * @param args - Array of arguments to pass to the workflow
-   * @param options - Workflow execution options
-   */
-  async startWorkflow<T>(
-    workflowType: string,
-    args?: unknown[],
-    options?: WorkflowStartOptions
-  ): Promise<WorkflowExecutionResult<T>>
+Key methods:
+- `startWorkflow()` - Start a workflow execution
+- `signalWorkflow()` - Send a signal to a running workflow
+- `queryWorkflow()` - Query a running workflow
+- `getWorkflowHandle()` - Get a workflow handle to interact with it
+- `terminateWorkflow()` - Terminate a workflow execution
+- `cancelWorkflow()` - Cancel a workflow execution
+- `getHealth()` - Get service health status
+- `createSchedule()` - Create a schedule
+- `listSchedules()` - List all schedules
+- `deleteSchedule()` - Delete a schedule
 
-  /**
-   * Send a signal to a running workflow
-   * @param workflowId - The workflow ID
-   * @param signalName - Name of the signal
-   * @param args - Arguments for the signal
-   */
-  async signalWorkflow(
-    workflowId: string,
-    signalName: string,
-    args?: unknown[]
-  ): Promise<WorkflowSignalResult>
-
-  /**
-   * Query a running workflow
-   * @param workflowId - The workflow ID
-   * @param queryName - Name of the query
-   * @param args - Arguments for the query
-   */
-  async queryWorkflow<T>(
-    workflowId: string,
-    queryName: string,
-    args?: unknown[]
-  ): Promise<WorkflowQueryResult<T>>
-
-  /**
-   * Get a workflow handle to interact with it
-   * @param workflowId - The workflow ID
-   * @param runId - Optional run ID for specific execution
-   */
-  async getWorkflowHandle<T>(
-    workflowId: string,
-    runId?: string
-  ): Promise<T>
-
-  /**
-   * Terminate a workflow execution
-   * @param workflowId - The workflow ID
-   * @param reason - Termination reason
-   */
-  async terminateWorkflow(
-    workflowId: string,
-    reason?: string
-  ): Promise<WorkflowTerminationResult>
-
-  /**
-   * Cancel a workflow execution
-   * @param workflowId - The workflow ID
-   */
-  async cancelWorkflow(
-    workflowId: string
-  ): Promise<WorkflowCancellationResult>
-
-  /**
-   * Get service health status
-   */
-  getHealth(): ServiceHealth
-
-  /**
-   * Create a schedule
-   */
-  async createSchedule(options: ScheduleCreateOptions): Promise<ScheduleHandle>
-
-  /**
-   * List all schedules
-   */
-  async listSchedules(): Promise<ScheduleListDescription[]>
-
-  /**
-   * Delete a schedule
-   */
-  async deleteSchedule(scheduleId: string): Promise<void>
-}
-```
-
-### WorkflowStartOptions
-
-Options for starting workflows:
-
-```typescript
-interface WorkflowStartOptions {
-  workflowId?: string;                    // Unique workflow ID
-  taskQueue?: string;                     // Task queue name
-  workflowExecutionTimeout?: Duration;    // Total workflow timeout
-  workflowRunTimeout?: Duration;          // Single run timeout
-  workflowTaskTimeout?: Duration;         // Decision task timeout
-  memo?: Record<string, unknown>;         // Workflow memo
-  searchAttributes?: SearchAttributes;     // Search attributes for filtering
-}
-```
-
-### Result Types
-
-```typescript
-interface WorkflowExecutionResult<T> {
-  success: boolean;
-  result: T;                              // Contains workflowId, runId, etc.
-  executionTime: number;
-  error?: Error;
-}
-
-interface WorkflowQueryResult<T> {
-  success: boolean;
-  result: T;
-  workflowId: string;
-  queryName: string;
-}
-
-interface WorkflowSignalResult {
-  success: boolean;
-  workflowId: string;
-  signalName: string;
-}
-```
+[🔝 Back to top](#table-of-contents)
 
 ## Examples
 
-## Examples
+For complete working examples, visit our [documentation](https://harsh-simform.github.io/nestjs-temporal-core/). The README includes example scenarios for:
 
-### Example 1: E-commerce Order Processing
+1. **E-commerce Order Processing** - Complete example with compensation logic
+2. **Scheduled Reports** - Creating and managing scheduled workflows
+3. **Activity Retry Configuration** - Custom retry policies
+4. **Child Workflows** - Organizing complex workflows
+5. **Continue-As-New** - For long-running workflows
+6. **Custom Error Handling** - Implementing custom error types
 
-Complete example with compensation logic:
-
-```typescript
-// order.activity.ts
-@Injectable()
-@Activity({ name: 'order-activities' })
-export class OrderActivity {
-  constructor(
-    private readonly paymentService: PaymentService,
-    private readonly inventoryService: InventoryService,
-    private readonly emailService: EmailService,
-  ) {}
-  
-  @ActivityMethod('validatePayment')
-  async validatePayment(paymentData: PaymentData): Promise<PaymentResult> {
-    return await this.paymentService.validate(paymentData);
-  }
-
-  @ActivityMethod('chargePayment')
-  async chargePayment(paymentData: PaymentData): Promise<{ transactionId: string }> {
-    return await this.paymentService.charge(paymentData);
-  }
-
-  @ActivityMethod('refundPayment')
-  async refundPayment(transactionId: string): Promise<void> {
-    await this.paymentService.refund(transactionId);
-  }
-
-  @ActivityMethod('reserveInventory')
-  async reserveInventory(items: OrderItem[]): Promise<{ reservationId: string }> {
-    return await this.inventoryService.reserve(items);
-  }
-
-  @ActivityMethod('releaseInventory')
-  async releaseInventory(reservationId: string): Promise<void> {
-    await this.inventoryService.release(reservationId);
-  }
-
-  @ActivityMethod('sendConfirmationEmail')
-  async sendConfirmationEmail(order: Order): Promise<void> {
-    await this.emailService.sendConfirmation(order);
-  }
-}
-
-// order.workflow.ts
-import { proxyActivities, defineSignal, defineQuery, setHandler } from '@temporalio/workflow';
-import type { OrderActivity } from './order.activity';
-
-const {
-  validatePayment,
-  chargePayment,
-  refundPayment,
-  reserveInventory,
-  releaseInventory,
-  sendConfirmationEmail,
-} = proxyActivities<typeof OrderActivity.prototype>({
-  startToCloseTimeout: '5m',
-  retry: { maximumAttempts: 3 },
-});
-
-export const cancelOrderSignal = defineSignal<[string]>('cancelOrder');
-export const getOrderStatusQuery = defineQuery<OrderStatus>('getOrderStatus');
-
-export async function processOrderWorkflow(orderData: OrderData): Promise<OrderResult> {
-  let status: OrderStatus = 'pending';
-  let transactionId: string | undefined;
-  let reservationId: string | undefined;
-  let cancelled = false;
-
-  setHandler(cancelOrderSignal, (reason: string) => {
-    cancelled = true;
-  });
-
-  setHandler(getOrderStatusQuery, () => status);
-
-  try {
-    // Step 1: Validate payment
-    status = 'validating_payment';
-    const paymentValid = await validatePayment(orderData.payment);
-    if (!paymentValid.valid) {
-      throw new Error('Invalid payment method');
-    }
-
-    // Check cancellation
-    if (cancelled) {
-      status = 'cancelled';
-      return { orderId: orderData.orderId, status };
-    }
-
-    // Step 2: Reserve inventory
-    status = 'reserving_inventory';
-    const reservation = await reserveInventory(orderData.items);
-    reservationId = reservation.reservationId;
-
-    // Step 3: Charge payment
-    status = 'charging_payment';
-    const payment = await chargePayment(orderData.payment);
-    transactionId = payment.transactionId;
-
-    // Step 4: Send confirmation
-    status = 'sending_confirmation';
-    await sendConfirmationEmail({
-      orderId: orderData.orderId,
-      items: orderData.items,
-      total: orderData.totalAmount,
-    });
-
-    status = 'completed';
-    return {
-      orderId: orderData.orderId,
-      status,
-      transactionId,
-      reservationId,
-    };
-  } catch (error) {
-    // Compensation logic
-    status = 'compensating';
-
-    if (reservationId) {
-      await releaseInventory(reservationId);
-    }
-
-    if (transactionId) {
-      await refundPayment(transactionId);
-    }
-
-    status = 'failed';
-    throw error;
-  }
-}
-
-// order.service.ts
-@Injectable()
-export class OrderService {
-  constructor(private readonly temporal: TemporalService) {}
-
-  async createOrder(orderData: OrderData) {
-    const result = await this.temporal.startWorkflow(
-      'processOrderWorkflow',
-      [orderData],
-      {
-        workflowId: `order-${orderData.orderId}`,
-        taskQueue: 'order-queue',
-      }
-    );
-
-    return result.result;
-  }
-
-  async getOrderStatus(orderId: string) {
-    const result = await this.temporal.queryWorkflow(
-      `order-${orderId}`,
-      'getOrderStatus'
-    );
-    
-    return result.result;
-  }
-
-  async cancelOrder(orderId: string, reason: string) {
-    await this.temporal.signalWorkflow(
-      `order-${orderId}`,
-      'cancelOrder',
-      [reason]
-    );
-  }
-}
-```
-
-### Example 2: Scheduled Reports
-
-Creating and managing scheduled workflows:
-
-```typescript
-// report.activity.ts
-@Injectable()
-@Activity({ name: 'report-activities' })
-export class ReportActivity {
-  constructor(
-    private readonly reportService: ReportService,
-    private readonly storageService: StorageService,
-    private readonly notificationService: NotificationService,
-  ) {}
-  
-  @ActivityMethod('generateSalesReport')
-  async generateSalesReport(period: ReportPeriod): Promise<ReportData> {
-    return await this.reportService.generateSales(period);
-  }
-
-  @ActivityMethod('uploadReport')
-  async uploadReport(reportData: ReportData): Promise<string> {
-    return await this.storageService.upload(reportData);
-  }
-
-  @ActivityMethod('notifyStakeholders')
-  async notifyStakeholders(reportUrl: string, recipients: string[]): Promise<void> {
-    await this.notificationService.send(recipients, reportUrl);
-  }
-}
-
-// report.workflow.ts
-import { proxyActivities } from '@temporalio/workflow';
-import type { ReportActivity } from './report.activity';
-
-const { generateSalesReport, uploadReport, notifyStakeholders } = 
-  proxyActivities<typeof ReportActivity.prototype>({
-    startToCloseTimeout: '10m',
-  });
-
-export async function weeklyReportWorkflow(): Promise<ReportResult> {
-  const endDate = new Date();
-  const startDate = new Date(endDate.getTime() - 7 * 24 * 60 * 60 * 1000);
-
-  // Generate report
-  const reportData = await generateSalesReport({
-    startDate,
-    endDate,
-    type: 'weekly',
-  });
-
-  // Upload to storage
-  const reportUrl = await uploadReport(reportData);
-
-  // Notify stakeholders
-  await notifyStakeholders(reportUrl, ['management@company.com']);
-
-  return {
-    reportUrl,
-    generatedAt: new Date(),
-    period: { startDate, endDate },
-  };
-}
-
-// schedule.service.ts
-@Injectable()
-export class ReportScheduleService {
-  constructor(private readonly temporal: TemporalService) {}
-
-  async setupWeeklyReports() {
-    await this.temporal.createSchedule({
-      scheduleId: 'weekly-sales-report',
-      spec: {
-        cronExpressions: ['0 9 * * MON'], // Every Monday at 9 AM
-      },
-      action: {
-        type: 'startWorkflow',
-        workflowType: 'weeklyReportWorkflow',
-        taskQueue: 'reports-queue',
-      },
-      policies: {
-        overlap: 'SKIP',
-        catchupWindow: '1 hour',
-      },
-    });
-  }
-
-  async deleteSchedule(scheduleId: string) {
-    await this.temporal.deleteSchedule(scheduleId);
-  }
-
-  async listAllSchedules() {
-    return await this.temporal.listSchedules();
-  }
-}
-```
+[🔝 Back to top](#table-of-contents)
 
 ## Advanced Usage
 
 ### Activity Retry Configuration
-
-Configure custom retry policies for different activity types:
 
 ```typescript
 // workflow.ts
@@ -1216,25 +872,14 @@ const paymentActivities = proxyActivities<typeof PaymentActivity.prototype>({
     nonRetryableErrorTypes: ['InvalidPaymentMethod', 'InsufficientFunds'],
   },
 });
-
-const emailActivities = proxyActivities<typeof EmailActivity.prototype>({
-  startToCloseTimeout: '2m',
-  retry: {
-    maximumAttempts: 3,
-    initialInterval: '500ms',
-  },
-});
 ```
 
 ### Workflow Testing
-
-Test workflows using Temporal's testing framework:
 
 ```typescript
 import { TestWorkflowEnvironment } from '@temporalio/testing';
 import { Worker } from '@temporalio/worker';
 import { processOrderWorkflow } from './order.workflow';
-import { OrderActivity } from './order.activity';
 
 describe('Order Workflow', () => {
   let testEnv: TestWorkflowEnvironment;
@@ -1283,102 +928,7 @@ describe('Order Workflow', () => {
 });
 ```
 
-### Child Workflows
-
-Organize complex workflows using child workflows:
-
-```typescript
-// parent.workflow.ts
-import { startChild } from '@temporalio/workflow';
-
-export async function parentWorkflow(orderId: string) {
-  // Start child workflows
-  const paymentHandle = await startChild(processPaymentWorkflow, {
-    workflowId: `payment-${orderId}`,
-    args: [paymentData],
-  });
-
-  const shippingHandle = await startChild(processShippingWorkflow, {
-    workflowId: `shipping-${orderId}`,
-    args: [shippingData],
-  });
-
-  // Wait for both to complete
-  const [paymentResult, shippingResult] = await Promise.all([
-    paymentHandle.result(),
-    shippingHandle.result(),
-  ]);
-
-  return {
-    payment: paymentResult,
-    shipping: shippingResult,
-  };
-}
-```
-
-### Continue-As-New for Long-Running Workflows
-
-Use continue-as-new to prevent event history from growing too large:
-
-```typescript
-import { continueAsNew } from '@temporalio/workflow';
-
-export async function processEventStreamWorkflow(cursor: number): Promise<void> {
-  const events = await fetchEvents(cursor);
-  
-  for (const event of events) {
-    await processEvent(event);
-  }
-
-  // Continue as new after processing 1000 events
-  if (events.length >= 1000) {
-    await continueAsNew<typeof processEventStreamWorkflow>(cursor + events.length);
-  }
-}
-```
-
-### Custom Error Handling
-
-Implement custom error types and handling:
-
-```typescript
-// activities
-export class RetryableError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'RetryableError';
-  }
-}
-
-export class NonRetryableError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'NonRetryableError';
-  }
-}
-
-@ActivityMethod('processData')
-async processData(data: any): Promise<any> {
-  try {
-    return await this.externalApi.process(data);
-  } catch (error) {
-    if (error.code === 'RATE_LIMIT') {
-      throw new RetryableError('Rate limit exceeded, will retry');
-    } else if (error.code === 'INVALID_DATA') {
-      throw new NonRetryableError('Invalid data format');
-    }
-    throw error;
-  }
-}
-
-// workflow configuration
-const activities = proxyActivities<typeof DataActivity.prototype>({
-  startToCloseTimeout: '5m',
-  retry: {
-    nonRetryableErrorTypes: ['NonRetryableError'],
-  },
-});
-```
+[🔝 Back to top](#table-of-contents)
 
 ## Best Practices
 
@@ -1453,6 +1003,8 @@ const activities = proxyActivities<typeof DataActivity.prototype>({
 - Don't test against production Temporal server
 - Don't assume workflows are correct without testing
 
+[🔝 Back to top](#table-of-contents)
+
 ## Health Monitoring
 
 The package includes comprehensive health monitoring capabilities for production deployments.
@@ -1491,7 +1043,7 @@ export class HealthController {
   @Get('/status')
   async getHealthStatus() {
     const health = this.temporal.getHealth();
-    
+
     return {
       status: health.overallHealth,
       timestamp: new Date(),
@@ -1513,249 +1065,10 @@ export class HealthController {
       uptime: health.uptime,
     };
   }
-
-  @Get('/detailed')
-  async getDetailedHealth() {
-    const health = this.temporal.getHealth();
-    const stats = this.temporal.getStatistics();
-    
-    return {
-      health,
-      statistics: stats,
-      performance: {
-        workflowStartLatency: stats.averageWorkflowStartTime,
-        activityExecutionCount: stats.totalActivitiesExecuted,
-      },
-    };
-  }
 }
 ```
 
-### Health Check Response
-
-```typescript
-interface ServiceHealth {
-  overallHealth: 'healthy' | 'degraded' | 'unhealthy';
-  client: {
-    status: 'healthy' | 'unhealthy';
-    connectionStatus: 'connected' | 'disconnected';
-  };
-  worker: {
-    status: 'healthy' | 'unhealthy';
-    state: 'RUNNING' | 'STOPPED' | 'FAILED';
-    activitiesCount: number;
-  };
-  discovery: {
-    status: 'healthy' | 'unhealthy';
-    activitiesDiscovered: number;
-  };
-  uptime: number;
-  lastChecked: Date;
-}
-```
-```
-
-## Migration Guide
-
-### Migrating to v3.0.12+ (Multiple Workers Support)
-
-Version 3.0.12 introduces support for multiple workers without breaking existing single-worker configurations.
-
-#### No Changes Required for Single Worker
-
-If you're using a single worker, your existing configuration continues to work without any changes:
-
-```typescript
-// ✅ This still works exactly as before
-TemporalModule.register({
-  connection: { address: 'localhost:7233' },
-  taskQueue: 'my-queue',
-  worker: {
-    workflowsPath: require.resolve('./workflows'),
-    activityClasses: [MyActivity],
-  },
-})
-```
-
-#### Migrating to Multiple Workers
-
-**Before (v3.0.10):**
-```typescript
-// You had to create custom workers manually
-@Injectable()
-export class ScheduleService implements OnModuleInit {
-  private customWorker: Worker;
-
-  constructor(private temporal: TemporalService) {}
-
-  async onModuleInit() {
-    // This pattern required accessing internal APIs
-    const workerManager = this.temporal.getWorkerManager();
-    const connection = workerManager?.getConnection(); // This wasn't available!
-
-    // Manual worker creation...
-  }
-}
-```
-
-**After (v3.0.12):**
-```typescript
-// Option 1: Configure multiple workers in module
-TemporalModule.register({
-  connection: { address: 'localhost:7233' },
-  workers: [
-    {
-      taskQueue: 'main-queue',
-      workflowsPath: require.resolve('./workflows/main'),
-      activityClasses: [MainActivity],
-    },
-    {
-      taskQueue: 'schedule-queue',
-      workflowsPath: require.resolve('./workflows/schedule'),
-      activityClasses: [ScheduleActivity],
-    },
-  ],
-})
-
-// Option 2: Get native connection for manual worker creation
-@Injectable()
-export class CustomWorkerService implements OnModuleInit {
-  constructor(private temporal: TemporalService) {}
-
-  async onModuleInit() {
-    const workerManager = this.temporal.getWorkerManager();
-    const connection = workerManager.getConnection(); // Now available!
-
-    if (!connection) return;
-
-    const customWorker = await Worker.create({
-      connection, // Native NativeConnection object
-      taskQueue: 'custom-queue',
-      workflowsPath: require.resolve('./workflows/custom'),
-      activities: {
-        myActivity: async (data: string) => data,
-      },
-    });
-
-    await customWorker.run();
-  }
-}
-
-// Option 3: Register workers dynamically at runtime
-@Injectable()
-export class DynamicWorkerService {
-  constructor(private temporal: TemporalService) {}
-
-  async registerNewQueue(taskQueue: string) {
-    const result = await this.temporal.registerWorker({
-      taskQueue,
-      workflowsPath: require.resolve('./workflows/dynamic'),
-      activityClasses: [DynamicActivity],
-      autoStart: true,
-    });
-
-    if (result.success) {
-      console.log(`Worker registered for ${taskQueue}`);
-    }
-  }
-}
-```
-
-#### New APIs in v3.0.12
-
-```typescript
-// Get native connection for custom worker creation
-const workerManager = temporal.getWorkerManager();
-const connection: NativeConnection | null = workerManager.getConnection();
-
-// Get specific worker by task queue
-const worker: Worker | null = temporal.getWorker('payments-queue');
-
-// Get all workers information
-const workersInfo: MultipleWorkersInfo = temporal.getAllWorkers();
-console.log(`${workersInfo.runningWorkers}/${workersInfo.totalWorkers} workers running`);
-
-// Get specific worker status
-const status: WorkerStatus | null = temporal.getWorkerStatusByTaskQueue('payments-queue');
-
-// Control specific workers
-await temporal.startWorkerByTaskQueue('payments-queue');
-await temporal.stopWorkerByTaskQueue('notifications-queue');
-
-// Register new worker dynamically
-const result = await temporal.registerWorker({
-  taskQueue: 'new-queue',
-  workflowsPath: require.resolve('./workflows/new'),
-  activityClasses: [NewActivity],
-  autoStart: true,
-});
-```
-
-#### Breaking Changes from v3.0.10 to v3.0.11
-
-If you're upgrading from v3.0.10, note these changes:
-
-1. **Internal Architecture**: The internal connection management was refactored. If you were accessing private/internal APIs, those may have changed.
-
-2. **getConnection() Now Available**: In v3.0.10, accessing the native connection wasn't possible. This is now officially supported via `getWorkerManager().getConnection()`.
-
-3. **No API Removals**: All public APIs from v3.0.10 remain available in v3.0.11+.
-
-#### Best Practices for Multiple Workers
-
-```typescript
-// 1. Separate workers by domain/responsibility
-TemporalModule.register({
-  connection: { address: 'localhost:7233' },
-  workers: [
-    {
-      taskQueue: 'payments',        // Financial transactions
-      workflowsPath: require.resolve('./workflows/payments'),
-      activityClasses: [PaymentActivity, RefundActivity],
-      workerOptions: {
-        maxConcurrentActivityTaskExecutions: 50,
-      },
-    },
-    {
-      taskQueue: 'notifications',   // User notifications
-      workflowsPath: require.resolve('./workflows/notifications'),
-      activityClasses: [EmailActivity, SmsActivity],
-      workerOptions: {
-        maxConcurrentActivityTaskExecutions: 100,
-      },
-    },
-    {
-      taskQueue: 'background-jobs',  // Async background processing
-      workflowsPath: require.resolve('./workflows/jobs'),
-      activityClasses: [DataProcessingActivity],
-      autoStart: false, // Start only when needed
-    },
-  ],
-})
-
-// 2. Monitor worker health individually
-@Injectable()
-export class WorkerHealthService {
-  constructor(private temporal: TemporalService) {}
-
-  async checkAllWorkers() {
-    const allWorkers = this.temporal.getAllWorkers();
-    
-    for (const [taskQueue, status] of allWorkers.workers.entries()) {
-      if (!status.isHealthy) {
-        // Alert or restart unhealthy worker
-        await this.restartWorker(taskQueue);
-      }
-    }
-  }
-
-  private async restartWorker(taskQueue: string) {
-    await this.temporal.stopWorkerByTaskQueue(taskQueue);
-    await new Promise(resolve => setTimeout(resolve, 1000));
-    await this.temporal.startWorkerByTaskQueue(taskQueue);
-  }
-}
-```
+[🔝 Back to top](#table-of-contents)
 
 ## Troubleshooting
 
@@ -1764,10 +1077,6 @@ export class WorkerHealthService {
 #### 1. Connection Errors
 
 **Problem:** Cannot connect to Temporal server
-
-```
-Error: Failed to connect to localhost:7233
-```
 
 **Solutions:**
 ```typescript
@@ -1790,10 +1099,6 @@ TemporalModule.register({
 #### 2. Activity Not Found
 
 **Problem:** Workflow cannot find registered activities
-
-```
-Error: Activity 'myActivity' not found
-```
 
 **Solutions:**
 ```typescript
@@ -1825,10 +1130,6 @@ console.log('Activities discovered:', health.discovery.activitiesDiscovered);
 
 **Problem:** Workflow not found or not executing
 
-```
-Error: Workflow 'myWorkflow' not found
-```
-
 **Solutions:**
 ```typescript
 // 1. Ensure workflowsPath is correct
@@ -1855,10 +1156,6 @@ await temporal.startWorkflow(
 
 **Problem:** Activities or workflows timing out
 
-```
-Error: Activity timed out after 10s
-```
-
 **Solutions:**
 ```typescript
 // Configure appropriate timeouts
@@ -1874,67 +1171,6 @@ await temporal.startWorkflow('myWorkflow', [args], {
   workflowRunTimeout: '12h',       // Max single run time
   workflowTaskTimeout: '10s',      // Decision task timeout
 });
-```
-
-#### 5. Worker Not Starting
-
-**Problem:** Worker fails to start or crashes
-
-```
-Error: Worker failed to start
-```
-
-**Solutions:**
-```typescript
-// 1. Check worker configuration
-TemporalModule.register({
-  worker: {
-    autoStart: true, // Ensure autoStart is true
-    workflowsPath: require.resolve('./workflows'),
-    activityClasses: [MyActivity],
-  },
-})
-
-// 2. Check logs
-// Enable debug logging
-TemporalModule.register({
-  logLevel: 'debug',
-  enableLogger: true,
-})
-
-// 3. Verify worker health
-const health = temporalService.getHealth();
-console.log('Worker status:', health.worker.state);
-
-// 4. Check for port conflicts or resource issues
-```
-
-#### 6. Signal/Query Not Working
-
-**Problem:** Signals or queries not being handled
-
-**Solutions:**
-```typescript
-// 1. Define signals/queries at module level (not inside workflow)
-export const mySignal = defineSignal<[string]>('mySignal');
-export const myQuery = defineQuery<string>('myQuery');
-
-// 2. Set up handlers in workflow
-export async function myWorkflow() {
-  let value = 'initial';
-  
-  setHandler(mySignal, (newValue: string) => {
-    value = newValue;
-  });
-  
-  setHandler(myQuery, () => value);
-  
-  // ... workflow logic
-}
-
-// 3. Use correct names when signaling/querying
-await temporal.signalWorkflow(workflowId, 'mySignal', ['newValue']);
-const result = await temporal.queryWorkflow(workflowId, 'myQuery');
 ```
 
 ### Debug Mode
@@ -1971,10 +1207,85 @@ If you're still experiencing issues:
 5. **Check GitHub Issues** - [Search existing issues](https://github.com/harsh-simform/nestjs-temporal-core/issues)
 6. **Create an issue** - Provide logs, configuration, and minimal reproduction
 
+[🔝 Back to top](#table-of-contents)
+
+## Migration Guide
+
+### Migrating to v3.0.12+ (Multiple Workers Support)
+
+Version 3.0.12 introduces support for multiple workers without breaking existing single-worker configurations.
+
+#### No Changes Required for Single Worker
+
+Your existing configuration continues to work:
+
+```typescript
+// ✅ This still works exactly as before
+TemporalModule.register({
+  connection: { address: 'localhost:7233' },
+  taskQueue: 'my-queue',
+  worker: {
+    workflowsPath: require.resolve('./workflows'),
+    activityClasses: [MyActivity],
+  },
+})
+```
+
+#### Migrating to Multiple Workers
+
+**After (v3.0.12):**
+```typescript
+// Option 1: Configure multiple workers in module
+TemporalModule.register({
+  connection: { address: 'localhost:7233' },
+  workers: [
+    {
+      taskQueue: 'main-queue',
+      workflowsPath: require.resolve('./workflows/main'),
+      activityClasses: [MainActivity],
+    },
+    {
+      taskQueue: 'schedule-queue',
+      workflowsPath: require.resolve('./workflows/schedule'),
+      activityClasses: [ScheduleActivity],
+    },
+  ],
+})
+```
+
+#### New APIs in v3.0.12
+
+```typescript
+// Get native connection for custom worker creation
+const workerManager = temporal.getWorkerManager();
+const connection: NativeConnection | null = workerManager.getConnection();
+
+// Get specific worker by task queue
+const worker: Worker | null = temporal.getWorker('payments-queue');
+
+// Get all workers information
+const workersInfo: MultipleWorkersInfo = temporal.getAllWorkers();
+console.log(`${workersInfo.runningWorkers}/${workersInfo.totalWorkers} workers running`);
+
+// Control specific workers
+await temporal.startWorkerByTaskQueue('payments-queue');
+await temporal.stopWorkerByTaskQueue('notifications-queue');
+
+// Register new worker dynamically
+const result = await temporal.registerWorker({
+  taskQueue: 'new-queue',
+  workflowsPath: require.resolve('./workflows/new'),
+  activityClasses: [NewActivity],
+  autoStart: true,
+});
+```
+
+[🔝 Back to top](#table-of-contents)
+
 ## Requirements
 
 - **Node.js**: >= 16.0.0
-- **NestJS**: >= 9.0.0  
+- **NestJS**: >= 9.0.0
 - **Temporal Server**: >= 1.20.0
 
 ## Contributing
@@ -1988,8 +1299,6 @@ We welcome contributions! To contribute:
 5. Commit your changes (`git commit -m 'Add amazing feature'`)
 6. Push to the branch (`git push origin feature/amazing-feature`)
 7. Open a Pull Request
-
-Please see [CONTRIBUTING.md](CONTRIBUTING.md) for detailed guidelines.
 
 ### Development Setup
 
@@ -2014,6 +1323,8 @@ npm run build
 npm run docs:generate
 ```
 
+[🔝 Back to top](#table-of-contents)
+
 ## License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
@@ -2025,7 +1336,6 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 - 💬 **Discussions**: [GitHub Discussions](https://github.com/harsh-simform/nestjs-temporal-core/discussions)
 - 📦 **NPM**: [nestjs-temporal-core](https://www.npmjs.com/package/nestjs-temporal-core)
 - 🔄 **Changelog**: [Releases](https://github.com/harsh-simform/nestjs-temporal-core/releases)
-- 📖 **Example Project**: [nestjs-temporal-core-example](https://github.com/harsh-simform/nestjs-temporal-core-example)
 
 ## Related Projects
 
@@ -2035,3 +1345,10 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ---
 
+<div align="center">
+
+**[⭐ Star us on GitHub](https://github.com/harsh-simform/nestjs-temporal-core)** if you find this project helpful!
+
+Made with ❤️ by the Harsh Simform
+
+</div>
