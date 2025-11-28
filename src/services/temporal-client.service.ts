@@ -416,9 +416,7 @@ export class TemporalClientService implements OnModuleInit {
 
         // Temporal doesn't allow newlines, tabs, or other control characters
         if (/[\n\r\t\u0000-\u001f\u007f]/.test(workflowId)) {
-            throw new Error(
-                'Workflow ID cannot contain newlines, tabs, or control characters',
-            );
+            throw new Error('Workflow ID cannot contain newlines, tabs, or control characters');
         }
     }
 

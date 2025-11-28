@@ -101,7 +101,7 @@ export class TemporalScheduleService implements OnModuleInit, OnModuleDestroy {
                 // Try to create a new schedule client if none exists
                 try {
                     // Type assertion: ScheduleClient expects connection to match its internal type
-                    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+
                     this.scheduleClient = new ScheduleClient({
                         connection: this.client.connection as any,
                         namespace: this.options.connection?.namespace || 'default',

@@ -1112,9 +1112,9 @@ export class TemporalWorkerManagerService
     private shouldInitializeWorker(): boolean {
         return Boolean(
             this.options.worker &&
-                (this.options.worker.workflowsPath ||
-                    this.options.worker.workflowBundle ||
-                    this.options.worker.activityClasses?.length),
+            (this.options.worker.workflowsPath ||
+                this.options.worker.workflowBundle ||
+                this.options.worker.activityClasses?.length),
         );
     }
 
