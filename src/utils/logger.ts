@@ -127,9 +127,13 @@ export class TemporalLogger {
      */
     error(message: unknown, trace?: string | Error, context?: string): void {
         if (this.shouldLog('error')) {
-            const errorContext = context ?? this.context;
             const stackTrace = trace instanceof Error ? trace.stack : trace;
-            this.nestLogger.error(message, stackTrace, errorContext);
+            // Only pass context if explicitly overriding, otherwise use default from constructor
+            if (context) {
+                this.nestLogger.error(message, stackTrace, context);
+            } else {
+                this.nestLogger.error(message, stackTrace);
+            }
         }
     }
 
@@ -138,7 +142,12 @@ export class TemporalLogger {
      */
     warn(message: unknown, context?: string): void {
         if (this.shouldLog('warn')) {
-            this.nestLogger.warn(message, context ?? this.context);
+            // Only pass context if explicitly overriding
+            if (context) {
+                this.nestLogger.warn(message, context);
+            } else {
+                this.nestLogger.warn(message);
+            }
         }
     }
 
@@ -147,7 +156,12 @@ export class TemporalLogger {
      */
     log(message: unknown, context?: string): void {
         if (this.shouldLog('info')) {
-            this.nestLogger.log(message, context ?? this.context);
+            // Only pass context if explicitly overriding
+            if (context) {
+                this.nestLogger.log(message, context);
+            } else {
+                this.nestLogger.log(message);
+            }
         }
     }
 
@@ -163,7 +177,12 @@ export class TemporalLogger {
      */
     debug(message: unknown, context?: string): void {
         if (this.shouldLog('debug')) {
-            this.nestLogger.debug(message, context ?? this.context);
+            // Only pass context if explicitly overriding
+            if (context) {
+                this.nestLogger.debug(message, context);
+            } else {
+                this.nestLogger.debug(message);
+            }
         }
     }
 
@@ -172,7 +191,12 @@ export class TemporalLogger {
      */
     verbose(message: unknown, context?: string): void {
         if (this.shouldLog('verbose')) {
-            this.nestLogger.verbose(message, context ?? this.context);
+            // Only pass context if explicitly overriding
+            if (context) {
+                this.nestLogger.verbose(message, context);
+            } else {
+                this.nestLogger.verbose(message);
+            }
         }
     }
 
@@ -182,10 +206,12 @@ export class TemporalLogger {
     logExecutionTime(methodName: string, startTime: number, context?: string): void {
         if (this.shouldLog('debug')) {
             const executionTime = Date.now() - startTime;
-            this.nestLogger.debug(
-                `${methodName} executed in ${executionTime}ms`,
-                context ?? this.context,
-            );
+            // Only pass context if explicitly overriding
+            if (context) {
+                this.nestLogger.debug(`${methodName} executed in ${executionTime}ms`, context);
+            } else {
+                this.nestLogger.debug(`${methodName} executed in ${executionTime}ms`);
+            }
         }
     }
 
@@ -195,6 +221,7 @@ export class TemporalLogger {
     logWithLevel(level: LogLevel, message: unknown, context?: string): void {
         if (!this.shouldLog(level)) return;
 
+        // Pass context only if explicitly provided
         const methods = {
             error: () => this.error(message, undefined, context),
             warn: () => this.warn(message, context),

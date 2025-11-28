@@ -54,7 +54,7 @@ export class TemporalDiscoveryService implements OnModuleInit {
 
     async onModuleInit(): Promise<void> {
         try {
-            this.logger.debug('Starting component discovery...');
+            this.logger.verbose('Starting component discovery...');
             this.discoveryStartTime = new Date();
             const result = await this.discoverComponents();
             this.isDiscoveryComplete = true;
@@ -128,10 +128,10 @@ export class TemporalDiscoveryService implements OnModuleInit {
 
         const startTime = Date.now();
         try {
-            this.logger.debug(`Executing activity: ${name}`);
+            this.logger.verbose(`Executing activity: ${name}`);
             const result = await activity(...args);
             const executionTime = Date.now() - startTime;
-            this.logger.debug(`Activity completed: ${name}`);
+            this.logger.verbose(`Activity completed: ${name}`);
             return {
                 success: true,
                 result,
@@ -207,7 +207,7 @@ export class TemporalDiscoveryService implements OnModuleInit {
         const providers = this.discoveryService.getProviders();
         const controllers = this.discoveryService.getControllers();
 
-        this.logger.debug(
+        this.logger.verbose(
             `Scanning ${providers.length} providers and ${controllers.length} controllers`,
         );
 
@@ -255,7 +255,8 @@ export class TemporalDiscoveryService implements OnModuleInit {
             }
 
             const className = metatype.name;
-            this.logger.debug(`Processing class: ${className}`);
+            // Only log at verbose level to reduce noise
+            // this.logger.verbose(`Processing class: ${className}`);
 
             // Discover activities
             if (this.metadataAccessor.isActivity(metatype)) {
@@ -353,7 +354,8 @@ export class TemporalDiscoveryService implements OnModuleInit {
                         });
 
                         discoveredCount++;
-                        this.logger.debug(`Discovered activity: ${className}.${activityName}`);
+                        // Only log individual discoveries at verbose level to reduce noise
+                        // this.logger.verbose(`Discovered activity: ${className}.${activityName}`);
                     } else {
                         const errorMessage = `Invalid activity method for ${activityName}: not a function`;
                         this.logger.warn(errorMessage);

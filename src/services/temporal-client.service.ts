@@ -103,7 +103,9 @@ export class TemporalClientService implements OnModuleInit {
                     await this.performHealthCheck();
                 }
 
-                this.logger.debug(`Starting workflow '${workflowType}' with ID: ${workflowId}`);
+                this.logger.verbose(
+                    `Starting workflow '${workflowType}' [${workflowId}] on queue '${taskQueue}'`,
+                );
 
                 // Use our existing client
                 const handle = await this.client!.workflow.start(workflowType, {
@@ -113,7 +115,7 @@ export class TemporalClientService implements OnModuleInit {
                 });
 
                 this.logger.info(
-                    `Started workflow: ${workflowType} [${workflowId}] on queue: ${taskQueue}`,
+                    `Started workflow '${workflowType}' [${workflowId}] on '${taskQueue}'`,
                 );
                 return { ...handle, handle };
             } catch (error) {
@@ -126,17 +128,15 @@ export class TemporalClientService implements OnModuleInit {
                     // Exponential backoff: 1s, 2s, 4s
                     const retryDelay = baseRetryDelay * Math.pow(2, attempt - 1);
                     this.logger.warn(
-                        `Attempt ${attempt}/${maxRetries} failed for workflow '${workflowType}': ${message}. Retrying in ${retryDelay}ms...`,
+                        `Workflow '${workflowType}' start failed (attempt ${attempt}/${maxRetries}), retrying in ${retryDelay}ms: ${message}`,
                     );
-                    this.logger.debug(`Error details for retry decision:`, error);
                     await this.sleep(retryDelay);
                     continue;
                 }
 
-                this.logger.error(`Failed to start workflow '${workflowType}': ${message}`);
-                this.logger.error('Full error object:', error);
-                this.logger.debug(
-                    `Error details - Workflow: ${workflowType}, ID: ${workflowId}, Queue: ${taskQueue}, Retryable: ${isRetryableError}, Attempt: ${attempt}`,
+                this.logger.error(
+                    `Failed to start workflow '${workflowType}' [${workflowId}] on queue '${taskQueue}' after ${attempt} attempt(s)`,
+                    error,
                 );
                 throw new Error(`Failed to start workflow '${workflowType}': ${message}`);
             }
@@ -155,13 +155,13 @@ export class TemporalClientService implements OnModuleInit {
 
         try {
             const handle = await (this.client as Client).workflow.getHandle(workflowId, runId);
-            this.logger.debug(
-                `Retrieved workflow handle: ${workflowId}${runId ? ` (run: ${runId})` : ''}`,
+            this.logger.verbose(
+                `Retrieved workflow handle for '${workflowId}'${runId ? ` (run: ${runId})` : ''}`,
             );
             return handle;
         } catch (error) {
             const message = this.extractErrorMessage(error);
-            this.logger.error(`Failed to get workflow handle for ${workflowId}: ${message}`, error);
+            this.logger.error(`Failed to get workflow handle for '${workflowId}'`, error);
             throw new Error(`Failed to get workflow handle for ${workflowId}: ${message}`);
         }
     }
@@ -174,11 +174,12 @@ export class TemporalClientService implements OnModuleInit {
             const handle = await this.getWorkflowHandle(workflowId, runId);
             await handle.terminate(reason);
 
-            this.logger.info(`Terminated workflow: ${workflowId}${reason ? ` (${reason})` : ''}`);
+            this.logger.info(`Terminated workflow '${workflowId}'${reason ? `: ${reason}` : ''}`);
         } catch (error) {
-            const message = this.extractErrorMessage(error);
-            this.logger.error(`Failed to terminate workflow ${workflowId}: ${message}`, error);
-            throw new Error(`Failed to terminate workflow ${workflowId}: ${message}`);
+            this.logger.error(`Failed to terminate workflow '${workflowId}'`, error);
+            throw new Error(
+                `Failed to terminate workflow ${workflowId}: ${this.extractErrorMessage(error)}`,
+            );
         }
     }
 
@@ -190,11 +191,12 @@ export class TemporalClientService implements OnModuleInit {
             const handle = await this.getWorkflowHandle(workflowId, runId);
             await handle.cancel();
 
-            this.logger.info(`Cancelled workflow: ${workflowId}`);
+            this.logger.info(`Cancelled workflow '${workflowId}'`);
         } catch (error) {
-            const message = this.extractErrorMessage(error);
-            this.logger.error(`Failed to cancel workflow ${workflowId}: ${message}`, error);
-            throw new Error(`Failed to cancel workflow ${workflowId}: ${message}`);
+            this.logger.error(`Failed to cancel workflow '${workflowId}'`, error);
+            throw new Error(
+                `Failed to cancel workflow ${workflowId}: ${this.extractErrorMessage(error)}`,
+            );
         }
     }
 
@@ -211,15 +213,14 @@ export class TemporalClientService implements OnModuleInit {
             const handle = await this.getWorkflowHandle(workflowId, runId);
             await handle.signal(signalName, ...(args || []));
 
-            this.logger.debug(`Sent signal '${signalName}' to workflow: ${workflowId}`);
+            this.logger.debug(`Sent signal '${signalName}' to workflow '${workflowId}'`);
         } catch (error) {
-            const message = this.extractErrorMessage(error);
             this.logger.error(
-                `Failed to send signal '${signalName}' to workflow ${workflowId}: ${message}`,
+                `Failed to send signal '${signalName}' to workflow '${workflowId}'`,
                 error,
             );
             throw new Error(
-                `Failed to send signal '${signalName}' to workflow ${workflowId}: ${message}`,
+                `Failed to send signal '${signalName}' to workflow ${workflowId}: ${this.extractErrorMessage(error)}`,
             );
         }
     }
@@ -234,12 +235,9 @@ export class TemporalClientService implements OnModuleInit {
     ): Promise<void> {
         try {
             await handle.signal(signalName, ...(args || []));
-            this.logger.debug(`Sent signal '${signalName}' to workflow handle`);
+            this.logger.verbose(`Sent signal '${signalName}' to workflow`);
         } catch (error) {
-            this.logger.error(
-                `Failed to send signal '${signalName}': ${this.extractErrorMessage(error)}`,
-                error,
-            );
+            this.logger.error(`Failed to send signal '${signalName}'`, error);
             throw error;
         }
     }
@@ -257,15 +255,13 @@ export class TemporalClientService implements OnModuleInit {
             const handle = await this.getWorkflowHandle(workflowId, runId);
             const result = await handle.query(queryName, ...(args || []));
 
-            this.logger.debug(`Queried '${queryName}' from workflow: ${workflowId}`);
+            this.logger.debug(`Queried '${queryName}' from workflow '${workflowId}'`);
             return result as T;
         } catch (error) {
-            const message = this.extractErrorMessage(error);
-            this.logger.error(
-                `Failed to query '${queryName}' on workflow ${workflowId}: ${message}`,
-                error,
+            this.logger.error(`Failed to query '${queryName}' on workflow '${workflowId}'`, error);
+            throw new Error(
+                `Failed to query '${queryName}' on workflow ${workflowId}: ${this.extractErrorMessage(error)}`,
             );
-            throw new Error(`Failed to query '${queryName}' on workflow ${workflowId}: ${message}`);
         }
     }
 
@@ -279,13 +275,10 @@ export class TemporalClientService implements OnModuleInit {
     ): Promise<T> {
         try {
             const result = await handle.query(queryName, ...(args || []));
-            this.logger.debug(`Queried '${queryName}' from workflow handle`);
+            this.logger.verbose(`Queried '${queryName}' from workflow`);
             return result as T;
         } catch (error) {
-            this.logger.error(
-                `Failed to query '${queryName}': ${this.extractErrorMessage(error)}`,
-                error,
-            );
+            this.logger.error(`Failed to query '${queryName}'`, error);
             throw error;
         }
     }
@@ -298,13 +291,10 @@ export class TemporalClientService implements OnModuleInit {
             const handle = await this.getWorkflowHandle(workflowId, runId);
             const result = await handle.result();
 
-            this.logger.debug(`Retrieved result from workflow: ${workflowId}`);
+            this.logger.verbose(`Retrieved result from workflow '${workflowId}'`);
             return result as T;
         } catch (error) {
-            this.logger.error(
-                `Failed to get result from ${workflowId}: ${this.extractErrorMessage(error)}`,
-                error,
-            );
+            this.logger.error(`Failed to get result from workflow '${workflowId}'`, error);
             throw error;
         }
     }

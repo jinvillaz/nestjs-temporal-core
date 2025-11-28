@@ -61,15 +61,16 @@ export class TemporalService implements OnModuleInit, OnModuleDestroy {
         const startTime = Date.now();
 
         try {
-            this.logger.info('Initializing Temporal Service...');
+            this.logger.verbose('Initializing Temporal Service...');
 
             // Wait for all individual services to initialize
             const initResult = await this.waitForServicesInitialization();
 
             // Mark this service as initialized
             this.isInitialized = true;
+            const initTime = Date.now() - startTime;
 
-            this.logger.info('Temporal Service initialized successfully');
+            this.logger.info(`Temporal Service initialized in ${initTime}ms`);
 
             return {
                 success: true,
@@ -77,12 +78,11 @@ export class TemporalService implements OnModuleInit, OnModuleDestroy {
                 initializationTime: Date.now() - startTime,
             };
         } catch (error) {
-            const errorMessage = this.extractErrorMessage(error);
-            this.logger.error(`Failed to initialize Temporal Service: ${errorMessage}`, error);
+            this.logger.error('Failed to initialize Temporal Service', error);
 
             return {
                 success: false,
-                error: error instanceof Error ? error : new Error(errorMessage),
+                error: error instanceof Error ? error : new Error(this.extractErrorMessage(error)),
                 servicesInitialized: {
                     client: false,
                     worker: false,
@@ -157,20 +157,19 @@ export class TemporalService implements OnModuleInit, OnModuleDestroy {
      */
     private async performShutdown(): Promise<void> {
         try {
-            this.logger.info('Shutting down Temporal Service...');
+            const workerWasRunning = this.workerService && this.workerService.isWorkerRunning();
 
             // Stop worker if running
-            if (this.workerService && this.workerService.isWorkerRunning()) {
+            if (workerWasRunning) {
                 await this.workerService.stopWorker();
             }
 
             this.isInitialized = false;
-            this.logger.info('Temporal Service shut down successfully');
-        } catch (error) {
-            this.logger.error(
-                `Error during service shutdown: ${this.extractErrorMessage(error)}`,
-                error,
+            this.logger.info(
+                `Temporal Service shut down${workerWasRunning ? ' (worker stopped)' : ''}`,
             );
+        } catch (error) {
+            this.logger.error('Error during service shutdown', error);
         } finally {
             this.shutdownPromise = null;
         }
@@ -201,11 +200,7 @@ export class TemporalService implements OnModuleInit, OnModuleDestroy {
                 executionTime: Date.now() - startTime,
             };
         } catch (error) {
-            // Log the error and re-throw it instead of returning success: false
-            this.logger.error(
-                `Failed to start workflow '${workflowType}': ${this.extractErrorMessage(error)}`,
-                error,
-            );
+            this.logger.error(`Failed to start workflow '${workflowType}'`, error);
             throw error instanceof Error ? error : new Error(this.extractErrorMessage(error));
         }
     }
@@ -232,9 +227,8 @@ export class TemporalService implements OnModuleInit, OnModuleDestroy {
                 signalName,
             };
         } catch (error) {
-            // Log the error and re-throw it instead of returning success: false
             this.logger.error(
-                `Failed to signal workflow '${workflowId}' with signal '${signalName}': ${this.extractErrorMessage(error)}`,
+                `Failed to signal workflow '${workflowId}' with '${signalName}'`,
                 error,
             );
             throw error instanceof Error ? error : new Error(this.extractErrorMessage(error));
@@ -268,9 +262,8 @@ export class TemporalService implements OnModuleInit, OnModuleDestroy {
                 queryName,
             };
         } catch (error) {
-            // Log the error and re-throw it instead of returning success: false
             this.logger.error(
-                `Failed to query workflow '${workflowId}' with query '${queryName}': ${this.extractErrorMessage(error)}`,
+                `Failed to query workflow '${workflowId}' with '${queryName}'`,
                 error,
             );
             throw error instanceof Error ? error : new Error(this.extractErrorMessage(error));

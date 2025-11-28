@@ -76,7 +76,7 @@ export class TemporalWorkerManagerService
 
     async onModuleInit(): Promise<void> {
         try {
-            this.logger.debug('Initializing Temporal worker manager...');
+            this.logger.verbose('Initializing Temporal worker manager...');
 
             // Check if we should use multiple workers mode
             if (this.options.workers && this.options.workers.length > 0) {
@@ -86,9 +86,7 @@ export class TemporalWorkerManagerService
 
             // Legacy single worker initialization
             if (!this.shouldInitializeWorker()) {
-                this.logger.info(
-                    'Worker initialization skipped - no worker configuration provided',
-                );
+                this.logger.info('Worker initialization skipped - no configuration provided');
                 return;
             }
 
@@ -103,9 +101,7 @@ export class TemporalWorkerManagerService
 
                 // Don't throw if connection failures are allowed
                 if (this.options.allowConnectionFailure === true) {
-                    this.logger.warn(
-                        'Worker initialization failed but connection failures are allowed',
-                    );
+                    this.logger.warn('Continuing without worker (connection failures allowed)');
                     return;
                 }
 
@@ -117,9 +113,7 @@ export class TemporalWorkerManagerService
 
             // Don't throw if connection failures are allowed
             if (this.options.allowConnectionFailure === true) {
-                this.logger.warn(
-                    'Worker initialization failed but connection failures are allowed',
-                );
+                this.logger.warn('Continuing without worker (connection failures allowed)');
                 return;
             }
 
@@ -241,7 +235,7 @@ export class TemporalWorkerManagerService
      * Create a worker from a worker definition
      */
     private async createWorkerFromDefinition(workerDef: WorkerDefinition): Promise<WorkerInstance> {
-        this.logger.debug(`Creating worker for task queue: ${workerDef.taskQueue}`);
+        this.logger.verbose(`Creating worker for task queue '${workerDef.taskQueue}'`);
 
         // Check if worker already exists
         if (this.workers.has(workerDef.taskQueue)) {
@@ -305,9 +299,7 @@ export class TemporalWorkerManagerService
         // Store worker instance
         this.workers.set(workerDef.taskQueue, workerInstance);
 
-        this.logger.info(
-            `Worker created for task queue '${workerDef.taskQueue}' with ${activities.size} activities`,
-        );
+        this.logger.info(`Created worker '${workerDef.taskQueue}' (${activities.size} activities)`);
 
         return workerInstance;
     }
@@ -340,7 +332,7 @@ export class TemporalWorkerManagerService
                 worker: workerInstance.worker,
             };
         } catch (error) {
-            this.logger.error(`Failed to create worker for '${workerDef.taskQueue}'`, error);
+            this.logger.error(`Failed to register worker '${workerDef.taskQueue}'`, error);
             return {
                 success: false,
                 taskQueue: workerDef.taskQueue,
@@ -401,7 +393,7 @@ export class TemporalWorkerManagerService
         }
 
         try {
-            this.logger.info(`Starting worker for task queue '${taskQueue}'...`);
+            this.logger.verbose(`Starting worker '${taskQueue}'...`);
             workerInstance.isRunning = true;
             workerInstance.startedAt = new Date();
             workerInstance.lastError = null;
@@ -413,11 +405,13 @@ export class TemporalWorkerManagerService
                 this.logger.error(`Worker '${taskQueue}' failed`, error);
             });
 
-            this.logger.info(`Worker for '${taskQueue}' started successfully`);
+            this.logger.info(
+                `Worker '${taskQueue}' started (${workerInstance.activities.size} activities, ${workerInstance.workflowSource})`,
+            );
         } catch (error) {
             workerInstance.lastError = this.extractErrorMessage(error);
             workerInstance.isRunning = false;
-            this.logger.error(`Failed to start worker for '${taskQueue}'`, error);
+            this.logger.error(`Failed to start worker '${taskQueue}'`, error);
             throw error;
         }
     }
@@ -433,17 +427,17 @@ export class TemporalWorkerManagerService
         }
 
         if (!workerInstance.isRunning) {
-            this.logger.debug(`Worker for '${taskQueue}' is not running`);
+            this.logger.verbose(`Worker '${taskQueue}' is not running`);
             return;
         }
 
         try {
-            this.logger.info(`Stopping worker for '${taskQueue}'...`);
+            this.logger.verbose(`Stopping worker '${taskQueue}'...`);
 
             try {
                 // Check worker state before attempting shutdown
                 const workerState = workerInstance.worker.getState();
-                this.logger.debug(`Worker '${taskQueue}' current state: ${workerState}`);
+                this.logger.verbose(`Worker '${taskQueue}' state: ${workerState}`);
 
                 // Only attempt shutdown if worker is in a state that allows it
                 if (
@@ -452,19 +446,22 @@ export class TemporalWorkerManagerService
                     workerState === 'FAILED'
                 ) {
                     await workerInstance.worker.shutdown();
-                    this.logger.info(`Worker for '${taskQueue}' stopped successfully`);
+                    const uptime = workerInstance.startedAt
+                        ? Math.round((Date.now() - workerInstance.startedAt.getTime()) / 1000)
+                        : 0;
+                    this.logger.info(`Worker '${taskQueue}' stopped (uptime: ${uptime}s)`);
                 } else if (
                     workerState === 'STOPPING' ||
                     workerState === 'DRAINING' ||
                     workerState === 'DRAINED'
                 ) {
-                    this.logger.info(
-                        `Worker for '${taskQueue}' is already shutting down (state: ${workerState})`,
+                    this.logger.verbose(
+                        `Worker '${taskQueue}' already shutting down (${workerState})`,
                     );
                     // Wait for the worker to complete shutdown
                     // The worker.run() promise will resolve when shutdown completes
                 } else if (workerState === 'STOPPED') {
-                    this.logger.debug(`Worker for '${taskQueue}' is already stopped`);
+                    this.logger.verbose(`Worker '${taskQueue}' already stopped`);
                 }
             } catch (shutdownError: unknown) {
                 // Handle race condition where worker state changes between check and shutdown
@@ -475,7 +472,7 @@ export class TemporalWorkerManagerService
                     errorMessage.includes('DRAINING') ||
                     errorMessage.includes('STOPPING')
                 ) {
-                    this.logger.debug(`Worker '${taskQueue}' is already shutting down or stopped`);
+                    this.logger.verbose(`Worker '${taskQueue}' already shutting down`);
                 } else {
                     // Re-throw unexpected errors
                     throw shutdownError;
@@ -486,7 +483,7 @@ export class TemporalWorkerManagerService
             workerInstance.startedAt = null;
         } catch (error) {
             workerInstance.lastError = this.extractErrorMessage(error);
-            this.logger.warn(`Error while stopping worker for '${taskQueue}'`, error);
+            this.logger.warn(`Error stopping worker '${taskQueue}'`, error);
             // Mark as not running even if shutdown failed
             workerInstance.isRunning = false;
         }
@@ -655,7 +652,6 @@ export class TemporalWorkerManagerService
                         // Start the worker in the background
                         this.worker!.run().catch((error) => {
                             this.lastError = this.extractErrorMessage(error);
-                            this.logger.error('Worker run failed', error);
                             this.isRunning = false;
 
                             // Auto-restart if enabled and within restart limits
@@ -664,8 +660,9 @@ export class TemporalWorkerManagerService
                                 this.restartCount < this.maxRestarts
                             ) {
                                 this.restartCount++;
-                                this.logger.info(
-                                    `Auto-restart enabled, attempting to restart worker (attempt ${this.restartCount}/${this.maxRestarts}) in 1 second...`,
+                                this.logger.warn(
+                                    `Worker failed, auto-restarting in 1s (attempt ${this.restartCount}/${this.maxRestarts})`,
+                                    error,
                                 );
                                 setTimeout(async () => {
                                     try {
@@ -676,8 +673,11 @@ export class TemporalWorkerManagerService
                                 }, 1000);
                             } else if (this.restartCount >= this.maxRestarts) {
                                 this.logger.error(
-                                    `Max restart attempts (${this.maxRestarts}) exceeded. Stopping auto-restart.`,
+                                    `Worker failed after ${this.maxRestarts} restart attempts, giving up`,
+                                    error,
                                 );
+                            } else {
+                                this.logger.error('Worker run failed', error);
                             }
                         });
 
@@ -734,11 +734,11 @@ export class TemporalWorkerManagerService
         }
 
         try {
-            this.logger.info('Stopping Temporal worker...');
+            this.logger.verbose('Stopping Temporal worker...');
 
             // Check worker state before attempting shutdown
             const workerState = this.worker.getState();
-            this.logger.debug(`Worker current state: ${workerState}`);
+            this.logger.verbose(`Worker state: ${workerState}`);
 
             // Only attempt shutdown if worker is in a state that allows it
             if (
@@ -747,17 +747,20 @@ export class TemporalWorkerManagerService
                 workerState === 'FAILED'
             ) {
                 await this.worker.shutdown();
-                this.logger.info('Temporal worker stopped successfully');
+                const uptime = this.startedAt
+                    ? Math.round((Date.now() - this.startedAt.getTime()) / 1000)
+                    : 0;
+                this.logger.info(`Worker stopped (uptime: ${uptime}s)`);
             } else if (
                 workerState === 'STOPPING' ||
                 workerState === 'DRAINING' ||
                 workerState === 'DRAINED'
             ) {
-                this.logger.info(`Worker is already shutting down (state: ${workerState})`);
+                this.logger.verbose(`Worker already shutting down (${workerState})`);
                 // Wait for the worker to complete shutdown
                 // The worker.run() promise will resolve when shutdown completes
             } else if (workerState === 'STOPPED') {
-                this.logger.debug('Worker is already stopped');
+                this.logger.verbose('Worker already stopped');
             }
 
             this.isRunning = false;
@@ -867,12 +870,12 @@ export class TemporalWorkerManagerService
                 try {
                     this.activities.set(activityName, handler);
                     registeredCount++;
-                    this.logger.debug(`Registered activity: ${activityName}`);
+                    this.logger.verbose(`Registered activity: ${activityName}`);
                 } catch (error) {
                     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
                     errors.push({ activityName, error: errorMessage });
                     this.logger.warn(
-                        `Failed to register activity ${activityName}: ${errorMessage}`,
+                        `Failed to register activity '${activityName}': ${errorMessage}`,
                     );
                 }
             }
@@ -1039,17 +1042,16 @@ export class TemporalWorkerManagerService
                 };
             }
 
-            this.logger.debug(`Creating NativeConnection to ${address}`);
+            this.logger.verbose(`Connecting to Temporal server at ${address}...`);
             this.connection = await NativeConnection.connect(connectOptions);
-            this.logger.info(`Connection established to ${address}`);
+            const ns = this.options.connection?.namespace || 'default';
+            this.logger.info(`Connected to ${address} (namespace: ${ns})`);
         } catch (error) {
             this.logger.error('Failed to create connection', error);
 
             // In development or when connection failures are allowed, don't throw
             if (this.options.allowConnectionFailure !== false) {
-                this.logger.warn(
-                    'Worker connection failed - continuing without worker functionality',
-                );
+                this.logger.warn('Connection failed, continuing without worker');
                 this.connection = null;
                 return;
             }
@@ -1160,8 +1162,8 @@ export class TemporalWorkerManagerService
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
             this.worker = await Worker.create(workerConfig as any);
 
-            this.logger.debug(
-                `Worker created - TaskQueue: ${workerConfig.taskQueue}, Activities: ${this.activities.size}, Source: ${this.getWorkflowSource()}`,
+            this.logger.verbose(
+                `Worker created: queue='${workerConfig.taskQueue}', activities=${this.activities.size}, workflows=${this.getWorkflowSource()}`,
             );
 
             return {
@@ -1212,15 +1214,18 @@ export class TemporalWorkerManagerService
                 try {
                     this.activities.set(activityName, handler);
                     loadedActivities++;
-                    this.logger.debug(`Loaded activity: ${activityName}`);
+                    this.logger.verbose(`Loaded activity: ${activityName}`);
                 } catch (error) {
                     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
                     errors.push({ component: activityName, error: errorMessage });
-                    this.logger.warn(`Failed to load activity ${activityName}: ${errorMessage}`);
+                    this.logger.warn(`Failed to load activity '${activityName}': ${errorMessage}`);
                 }
             }
 
-            this.logger.info(`Loaded ${loadedActivities} activities from discovery service`);
+            const duration = Date.now() - startTime;
+            this.logger.info(
+                `Loaded ${loadedActivities} ${loadedActivities === 1 ? 'activity' : 'activities'} from discovery in ${duration}ms`,
+            );
 
             return {
                 success: errors.length === 0,
@@ -1260,14 +1265,12 @@ export class TemporalWorkerManagerService
         // Add workflow configuration
         if (this.options.worker?.workflowsPath) {
             config.workflowsPath = this.options.worker.workflowsPath;
-            this.logger.debug(`Using workflows from path: ${this.options.worker.workflowsPath}`);
+            this.logger.verbose(`Using workflows from: ${this.options.worker.workflowsPath}`);
         } else if (this.options.worker?.workflowBundle) {
             config.workflowBundle = this.options.worker.workflowBundle;
-            this.logger.debug('Using workflow bundle');
+            this.logger.verbose('Using workflow bundle');
         } else {
-            this.logger.warn(
-                'No workflow configuration provided - worker will only handle activities',
-            );
+            this.logger.warn('No workflow configuration - worker will only handle activities');
         }
 
         // Add additional worker options
@@ -1313,7 +1316,7 @@ export class TemporalWorkerManagerService
                                         workerState === 'FAILED'
                                     ) {
                                         await workerInstance.worker.shutdown();
-                                        this.logger.debug(
+                                        this.logger.verbose(
                                             `Worker '${taskQueue}' shut down successfully`,
                                         );
                                     } else if (
@@ -1321,12 +1324,12 @@ export class TemporalWorkerManagerService
                                         workerState === 'DRAINING' ||
                                         workerState === 'DRAINED'
                                     ) {
-                                        this.logger.debug(
-                                            `Worker '${taskQueue}' is already shutting down (state: ${workerState})`,
+                                        this.logger.verbose(
+                                            `Worker '${taskQueue}' already shutting down (${workerState})`,
                                         );
                                     } else if (workerState === 'STOPPED') {
-                                        this.logger.debug(
-                                            `Worker '${taskQueue}' is already stopped`,
+                                        this.logger.verbose(
+                                            `Worker '${taskQueue}' already stopped`,
                                         );
                                     }
                                 } catch (shutdownError: unknown) {
@@ -1340,16 +1343,13 @@ export class TemporalWorkerManagerService
                                         errorMessage.includes('DRAINING') ||
                                         errorMessage.includes('STOPPING')
                                     ) {
-                                        this.logger.debug(
-                                            `Worker '${taskQueue}' is already shutting down or stopped`,
+                                        this.logger.verbose(
+                                            `Worker '${taskQueue}' already shutting down`,
                                         );
                                     } else {
                                         // Log but don't fail shutdown for unexpected errors
                                         this.logger.warn(
                                             `Unexpected error shutting down worker '${taskQueue}': ${errorMessage}`,
-                                            shutdownError instanceof Error
-                                                ? shutdownError.stack
-                                                : undefined,
                                         );
                                     }
                                 }
