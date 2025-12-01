@@ -274,5 +274,108 @@ describe('TemporalHealthController', () => {
             expect(temporalService.getWorkerStatus).toHaveBeenCalled();
             expect(temporalService.hasWorker).toHaveBeenCalled();
         });
+
+        it('should handle mixed component statuses', async () => {
+            const mixedHealth: OverallHealthStatus = {
+                status: 'degraded',
+                timestamp: new Date(),
+                isInitialized: true,
+                namespace: 'default',
+                summary: {
+                    totalActivities: 5,
+                    totalSchedules: 3,
+                    workerRunning: true,
+                    clientConnected: true,
+                },
+                components: {
+                    client: { status: 'healthy', isInitialized: true },
+                    worker: { status: 'degraded', isInitialized: true },
+                    discovery: { status: 'unhealthy', isInitialized: false },
+                    schedule: { status: 'healthy', isInitialized: true },
+                    activity: { status: 'degraded', isInitialized: true },
+                },
+            };
+
+            temporalService.getOverallHealth.mockResolvedValue(mixedHealth);
+            temporalService.getStats.mockReturnValue(mockStats);
+            temporalService.getWorkerStatus.mockReturnValue(mockWorkerStatus);
+            temporalService.hasWorker.mockReturnValue(true);
+
+            const result = await controller.getHealth();
+
+            expect(result.status).toBe('degraded');
+            expect(result.summary.healthyComponents).toBe(2);
+            expect(result.summary.degradedComponents).toBe(2);
+            expect(result.summary.unhealthyComponents).toBe(1);
+            expect(result.summary.totalComponents).toBe(5);
+        });
+
+        it('should handle all unhealthy components', async () => {
+            const allUnhealthyHealth: OverallHealthStatus = {
+                status: 'unhealthy',
+                timestamp: new Date(),
+                isInitialized: false,
+                namespace: 'default',
+                summary: {
+                    totalActivities: 0,
+                    totalSchedules: 0,
+                    workerRunning: false,
+                    clientConnected: false,
+                },
+                components: {
+                    client: { status: 'unhealthy', isInitialized: false },
+                    worker: { status: 'unhealthy', isInitialized: false },
+                    discovery: { status: 'unhealthy', isInitialized: false },
+                    schedule: { status: 'unhealthy', isInitialized: false },
+                    activity: { status: 'unhealthy', isInitialized: false },
+                },
+            };
+
+            temporalService.getOverallHealth.mockResolvedValue(allUnhealthyHealth);
+            temporalService.getStats.mockReturnValue(mockStats);
+            temporalService.getWorkerStatus.mockReturnValue(null);
+            temporalService.hasWorker.mockReturnValue(false);
+
+            const result = await controller.getHealth();
+
+            expect(result.status).toBe('unhealthy');
+            expect(result.summary.healthyComponents).toBe(0);
+            expect(result.summary.degradedComponents).toBe(0);
+            expect(result.summary.unhealthyComponents).toBe(5);
+        });
+
+        it('should handle all degraded components', async () => {
+            const allDegradedHealth: OverallHealthStatus = {
+                status: 'degraded',
+                timestamp: new Date(),
+                isInitialized: true,
+                namespace: 'default',
+                summary: {
+                    totalActivities: 3,
+                    totalSchedules: 1,
+                    workerRunning: true,
+                    clientConnected: true,
+                },
+                components: {
+                    client: { status: 'degraded', isInitialized: true },
+                    worker: { status: 'degraded', isInitialized: true },
+                    discovery: { status: 'degraded', isInitialized: true },
+                    schedule: { status: 'degraded', isInitialized: true },
+                    activity: { status: 'degraded', isInitialized: true },
+                },
+            };
+
+            temporalService.getOverallHealth.mockResolvedValue(allDegradedHealth);
+            temporalService.getStats.mockReturnValue(mockStats);
+            temporalService.getWorkerStatus.mockReturnValue(mockWorkerStatus);
+            temporalService.hasWorker.mockReturnValue(true);
+
+            const result = await controller.getHealth();
+
+            expect(result.status).toBe('degraded');
+            expect(result.summary.healthyComponents).toBe(0);
+            expect(result.summary.degradedComponents).toBe(5);
+            expect(result.summary.unhealthyComponents).toBe(0);
+        });
     });
 });

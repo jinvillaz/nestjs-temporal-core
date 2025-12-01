@@ -428,12 +428,13 @@ describe('TemporalClientService', () => {
 
             const logSpy = jest.spyOn(service['logger'], 'error').mockImplementation();
 
-            await expect(service.startWorkflow('testWorkflow')).rejects.toThrow();
-
-            expect(logSpy).toHaveBeenCalledWith(
-                "Failed to start workflow 'testWorkflow': Test error",
+            await expect(service.startWorkflow('testWorkflow')).rejects.toThrow(
+                "Failed to start workflow 'testWorkflow'",
             );
-            expect(logSpy).toHaveBeenCalledWith('Full error object:', error);
+
+            const callArgs = (logSpy as jest.Mock).mock.calls[0];
+            expect(callArgs[0]).toContain("Failed to start workflow 'testWorkflow'");
+            expect(callArgs[1]).toBe(error);
 
             logSpy.mockRestore();
         });
@@ -589,7 +590,7 @@ describe('TemporalClientService', () => {
             await expect(service.getWorkflowHandle('test-id')).rejects.toThrow();
 
             expect(logSpy).toHaveBeenCalledWith(
-                'Failed to get workflow handle for test-id: Test error',
+                "Failed to get workflow handle for 'test-id'",
                 error,
             );
 
@@ -653,7 +654,7 @@ describe('TemporalClientService', () => {
             await expect(service.terminateWorkflow('test-id', 'reason')).rejects.toThrow();
 
             expect(logSpy).toHaveBeenCalledWith(
-                'Failed to terminate workflow test-id: Termination failed',
+                "Failed to terminate workflow 'test-id'",
                 error,
             );
 
@@ -710,7 +711,7 @@ describe('TemporalClientService', () => {
             await expect(service.cancelWorkflow('test-id')).rejects.toThrow();
 
             expect(logSpy).toHaveBeenCalledWith(
-                'Failed to cancel workflow test-id: Cancellation failed',
+                "Failed to cancel workflow 'test-id'",
                 error,
             );
 
@@ -771,7 +772,7 @@ describe('TemporalClientService', () => {
             await expect(service.signalWorkflow('test-id', 'signal')).rejects.toThrow();
 
             expect(logSpy).toHaveBeenCalledWith(
-                "Failed to send signal 'signal' to workflow test-id: Signal failed",
+                "Failed to send signal 'signal' to workflow 'test-id'",
                 error,
             );
 
@@ -871,7 +872,7 @@ describe('TemporalClientService', () => {
             await expect(service.queryWorkflow('test-id', 'query')).rejects.toThrow();
 
             expect(logSpy).toHaveBeenCalledWith(
-                "Failed to query 'query' on workflow test-id: Query failed",
+                "Failed to query 'query' on workflow 'test-id'",
                 error,
             );
 
@@ -1472,8 +1473,9 @@ describe('TemporalClientService', () => {
 
             await service.startWorkflow('testWorkflow');
 
-            expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('Attempt 1/3 failed'));
-            expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('Retrying in 1000ms'));
+            expect(warnSpy).toHaveBeenCalledWith(
+                "Workflow 'testWorkflow' start failed (attempt 1/3), retrying in 1000ms: UNAVAILABLE",
+            );
 
             warnSpy.mockRestore();
         });
@@ -1491,8 +1493,7 @@ describe('TemporalClientService', () => {
             await service.startWorkflow('testWorkflow');
 
             expect(debugSpy).toHaveBeenCalledWith(
-                expect.stringContaining('Error details for retry decision:'),
-                grpcError,
+                'Performing health check before retry attempt 2',
             );
 
             debugSpy.mockRestore();
@@ -1511,8 +1512,9 @@ describe('TemporalClientService', () => {
                 service.startWorkflow('testWorkflow', [], { workflowId: 'test-123' }),
             ).rejects.toThrow();
 
-            expect(debugSpy).toHaveBeenCalledWith(
-                expect.stringContaining('Error details - Workflow: testWorkflow'),
+            expect(errorSpy).toHaveBeenCalledWith(
+                "Failed to start workflow 'testWorkflow' [test-123] on queue 'test-queue' after 1 attempt(s)",
+                grpcError,
             );
 
             debugSpy.mockRestore();
@@ -1572,7 +1574,7 @@ describe('TemporalClientService', () => {
             await expect(service.getWorkflowResult('test-id')).rejects.toThrow(error);
 
             expect(errorSpy).toHaveBeenCalledWith(
-                expect.stringContaining('Failed to get result from test-id'),
+                "Failed to get result from workflow 'test-id'",
                 error,
             );
 

@@ -68,7 +68,7 @@ describe('TemporalWorkerManagerService - Branch Coverage', () => {
 
             jest.spyOn(service as any, 'autoRestartWorker').mockResolvedValue(undefined);
 
-            const loggerInfoSpy = jest.spyOn((service as any).logger, 'info').mockImplementation();
+            const loggerWarnSpy = jest.spyOn((service as any).logger, 'warn').mockImplementation();
             const loggerErrorSpy = jest
                 .spyOn((service as any).logger, 'error')
                 .mockImplementation();
@@ -79,12 +79,16 @@ describe('TemporalWorkerManagerService - Branch Coverage', () => {
             await new Promise((resolve) => setTimeout(resolve, 1500));
 
             expect((service as any).restartCount).toBe(2);
-            expect(loggerInfoSpy).toHaveBeenCalledWith(
-                expect.stringContaining('Auto-restart enabled'),
+            expect(loggerWarnSpy).toHaveBeenCalledWith(
+                `Worker failed, auto-restarting in 1s (attempt ${
+                    (service as any).restartCount
+                }/${(service as any).maxRestarts})`,
+                expect.any(Error),
             );
-            expect(loggerErrorSpy).toHaveBeenCalledWith('Worker run failed', expect.any(Error));
+            // Note: 'Worker run failed' error is NOT logged when auto-restart is enabled
+            // The warn message above is the expected log output
 
-            loggerInfoSpy.mockRestore();
+            loggerWarnSpy.mockRestore();
             loggerErrorSpy.mockRestore();
         });
 
@@ -107,7 +111,8 @@ describe('TemporalWorkerManagerService - Branch Coverage', () => {
             await new Promise((resolve) => setTimeout(resolve, 600));
 
             expect(loggerErrorSpy).toHaveBeenCalledWith(
-                expect.stringContaining('Max restart attempts (3) exceeded'),
+                `Worker failed after ${(service as any).maxRestarts} restart attempts, giving up`,
+                expect.any(Error),
             );
 
             loggerErrorSpy.mockRestore();

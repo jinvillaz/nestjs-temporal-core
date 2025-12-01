@@ -73,7 +73,12 @@ export class TemporalScheduleService implements OnModuleInit, OnModuleDestroy {
                 `Schedule Service initialized (${this.scheduleHandles.size} schedules)`,
             );
         } catch (error) {
-            this.logger.error('Failed to initialize Temporal Schedule Service', error);
+            this.logger.error(
+                `Failed to initialize Temporal Schedule Service: ${this.extractErrorMessage(
+                    error,
+                )}`,
+                error,
+            );
             throw error;
         }
     }

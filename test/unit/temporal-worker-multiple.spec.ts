@@ -944,7 +944,7 @@ describe('TemporalWorkerManagerService - Multiple Workers', () => {
             expect(workerInstance.lastError).toBeNull();
             expect(mockWorker.run).toHaveBeenCalled();
             expect(loggerInfoSpy).toHaveBeenCalledWith(
-                "Starting worker for task queue 'queue-1'...",
+                "Worker 'queue-1' started (0 activities, filesystem)",
             );
 
             loggerInfoSpy.mockRestore();
@@ -1152,7 +1152,9 @@ describe('TemporalWorkerManagerService - Multiple Workers', () => {
             expect(workerInstance.isRunning).toBe(false);
             expect(workerInstance.startedAt).toBeNull();
             expect(mockWorker.shutdown).toHaveBeenCalled();
-            expect(loggerInfoSpy).toHaveBeenCalledWith("Stopping worker for 'queue-1'...");
+            expect(loggerInfoSpy).toHaveBeenCalledWith(
+                expect.stringContaining("Worker 'queue-1' stopped (uptime:"),
+            );
 
             loggerInfoSpy.mockRestore();
         });
@@ -1200,16 +1202,16 @@ describe('TemporalWorkerManagerService - Multiple Workers', () => {
                 ],
             ]);
 
-            const loggerDebugSpy = jest
-                .spyOn((service as any).logger, 'debug')
+            const loggerVerboseSpy = jest
+                .spyOn((service as any).logger, 'verbose')
                 .mockImplementation();
 
             await service.stopWorkerByTaskQueue('queue-1');
 
-            expect(loggerDebugSpy).toHaveBeenCalledWith("Worker for 'queue-1' is not running");
+            expect(loggerVerboseSpy).toHaveBeenCalledWith("Worker 'queue-1' is not running");
             expect(mockWorker.shutdown).not.toHaveBeenCalled();
 
-            loggerDebugSpy.mockRestore();
+            loggerVerboseSpy.mockRestore();
         });
 
         it('should throw error if worker not found', async () => {
@@ -1298,7 +1300,7 @@ describe('TemporalWorkerManagerService - Multiple Workers', () => {
 
             expect(workerInstance.lastError).toBe('Shutdown failed');
             expect(loggerWarnSpy).toHaveBeenCalledWith(
-                "Error while stopping worker for 'queue-1'",
+                "Error stopping worker 'queue-1'",
                 expect.any(Error),
             );
 
@@ -1351,16 +1353,18 @@ describe('TemporalWorkerManagerService - Multiple Workers', () => {
 
             (service as any).workers = new Map([['queue-1', workerInstance]]);
 
-            const loggerInfoSpy = jest.spyOn((service as any).logger, 'info').mockImplementation();
+            const loggerVerboseSpy = jest
+                .spyOn((service as any).logger, 'verbose')
+                .mockImplementation();
 
             await service.stopWorkerByTaskQueue('queue-1');
 
-            expect(loggerInfoSpy).toHaveBeenCalledWith(
+            expect(loggerVerboseSpy).toHaveBeenCalledWith(
                 expect.stringContaining('already shutting down'),
             );
             expect(mockWorker.shutdown).not.toHaveBeenCalled();
 
-            loggerInfoSpy.mockRestore();
+            loggerVerboseSpy.mockRestore();
         });
 
         it('should handle worker in STOPPED state', async () => {
@@ -1409,16 +1413,16 @@ describe('TemporalWorkerManagerService - Multiple Workers', () => {
 
             (service as any).workers = new Map([['queue-1', workerInstance]]);
 
-            const loggerDebugSpy = jest
-                .spyOn((service as any).logger, 'debug')
+            const loggerVerboseSpy = jest
+                .spyOn((service as any).logger, 'verbose')
                 .mockImplementation();
 
             await service.stopWorkerByTaskQueue('queue-1');
 
-            expect(loggerDebugSpy).toHaveBeenCalledWith(expect.stringContaining('already stopped'));
+            expect(loggerVerboseSpy).toHaveBeenCalledWith(expect.stringContaining('already stopped'));
             expect(mockWorker.shutdown).not.toHaveBeenCalled();
 
-            loggerDebugSpy.mockRestore();
+            loggerVerboseSpy.mockRestore();
         });
 
         it('should handle race condition errors gracefully', async () => {
@@ -1470,19 +1474,19 @@ describe('TemporalWorkerManagerService - Multiple Workers', () => {
 
             (service as any).workers = new Map([['queue-1', workerInstance]]);
 
-            const loggerDebugSpy = jest
-                .spyOn((service as any).logger, 'debug')
+            const loggerVerboseSpy = jest
+                .spyOn((service as any).logger, 'verbose')
                 .mockImplementation();
 
             // Should handle race condition gracefully without throwing
             await service.stopWorkerByTaskQueue('queue-1');
 
-            expect(loggerDebugSpy).toHaveBeenCalledWith(
-                expect.stringContaining('already shutting down or stopped'),
+            expect(loggerVerboseSpy).toHaveBeenCalledWith(
+                expect.stringContaining('already shutting down'),
             );
             expect(mockWorker.shutdown).toHaveBeenCalled();
 
-            loggerDebugSpy.mockRestore();
+            loggerVerboseSpy.mockRestore();
         });
     });
 
@@ -1603,18 +1607,18 @@ describe('TemporalWorkerManagerService - Multiple Workers', () => {
             (service as any).workers = new Map([['queue-1', workerInstance]]);
             (service as any).connection = mockConnection;
 
-            const loggerDebugSpy = jest
-                .spyOn((service as any).logger, 'debug')
+            const loggerVerboseSpy = jest
+                .spyOn((service as any).logger, 'verbose')
                 .mockImplementation();
 
             await service.onModuleDestroy();
 
-            expect(loggerDebugSpy).toHaveBeenCalledWith(
+            expect(loggerVerboseSpy).toHaveBeenCalledWith(
                 expect.stringContaining('already shutting down'),
             );
             expect(mockWorker.shutdown).not.toHaveBeenCalled();
 
-            loggerDebugSpy.mockRestore();
+            loggerVerboseSpy.mockRestore();
         });
 
         it('should handle worker in DRAINING state during shutdown', async () => {
@@ -1665,18 +1669,18 @@ describe('TemporalWorkerManagerService - Multiple Workers', () => {
             (service as any).workers = new Map([['queue-1', workerInstance]]);
             (service as any).connection = mockConnection;
 
-            const loggerDebugSpy = jest
-                .spyOn((service as any).logger, 'debug')
+            const loggerVerboseSpy = jest
+                .spyOn((service as any).logger, 'verbose')
                 .mockImplementation();
 
             await service.onModuleDestroy();
 
-            expect(loggerDebugSpy).toHaveBeenCalledWith(
+            expect(loggerVerboseSpy).toHaveBeenCalledWith(
                 expect.stringContaining('already shutting down'),
             );
             expect(mockWorker.shutdown).not.toHaveBeenCalled();
 
-            loggerDebugSpy.mockRestore();
+            loggerVerboseSpy.mockRestore();
         });
 
         it('should handle worker in DRAINED state during shutdown', async () => {
@@ -1727,18 +1731,18 @@ describe('TemporalWorkerManagerService - Multiple Workers', () => {
             (service as any).workers = new Map([['queue-1', workerInstance]]);
             (service as any).connection = mockConnection;
 
-            const loggerDebugSpy = jest
-                .spyOn((service as any).logger, 'debug')
+            const loggerVerboseSpy = jest
+                .spyOn((service as any).logger, 'verbose')
                 .mockImplementation();
 
             await service.onModuleDestroy();
 
-            expect(loggerDebugSpy).toHaveBeenCalledWith(
+            expect(loggerVerboseSpy).toHaveBeenCalledWith(
                 expect.stringContaining('already shutting down'),
             );
             expect(mockWorker.shutdown).not.toHaveBeenCalled();
 
-            loggerDebugSpy.mockRestore();
+            loggerVerboseSpy.mockRestore();
         });
 
         it('should handle worker in STOPPED state during shutdown', async () => {
@@ -1789,16 +1793,16 @@ describe('TemporalWorkerManagerService - Multiple Workers', () => {
             (service as any).workers = new Map([['queue-1', workerInstance]]);
             (service as any).connection = mockConnection;
 
-            const loggerDebugSpy = jest
-                .spyOn((service as any).logger, 'debug')
+            const loggerVerboseSpy = jest
+                .spyOn((service as any).logger, 'verbose')
                 .mockImplementation();
 
             await service.onModuleDestroy();
 
-            expect(loggerDebugSpy).toHaveBeenCalledWith(expect.stringContaining('already stopped'));
+            expect(loggerVerboseSpy).toHaveBeenCalledWith(expect.stringContaining('already stopped'));
             expect(mockWorker.shutdown).not.toHaveBeenCalled();
 
-            loggerDebugSpy.mockRestore();
+            loggerVerboseSpy.mockRestore();
         });
 
         it('should handle race condition during shutdown - Not running error', async () => {
@@ -1851,18 +1855,18 @@ describe('TemporalWorkerManagerService - Multiple Workers', () => {
             (service as any).workers = new Map([['queue-1', workerInstance]]);
             (service as any).connection = mockConnection;
 
-            const loggerDebugSpy = jest
-                .spyOn((service as any).logger, 'debug')
+            const loggerVerboseSpy = jest
+                .spyOn((service as any).logger, 'verbose')
                 .mockImplementation();
 
             await service.onModuleDestroy();
 
-            expect(loggerDebugSpy).toHaveBeenCalledWith(
-                expect.stringContaining('already shutting down or stopped'),
+            expect(loggerVerboseSpy).toHaveBeenCalledWith(
+                expect.stringContaining('already shutting down'),
             );
             expect(mockWorker.shutdown).toHaveBeenCalled();
 
-            loggerDebugSpy.mockRestore();
+            loggerVerboseSpy.mockRestore();
         });
 
         it('should handle race condition during shutdown - STOPPING error', async () => {
@@ -1913,17 +1917,17 @@ describe('TemporalWorkerManagerService - Multiple Workers', () => {
             (service as any).workers = new Map([['queue-1', workerInstance]]);
             (service as any).connection = mockConnection;
 
-            const loggerDebugSpy = jest
-                .spyOn((service as any).logger, 'debug')
+            const loggerVerboseSpy = jest
+                .spyOn((service as any).logger, 'verbose')
                 .mockImplementation();
 
             await service.onModuleDestroy();
 
-            expect(loggerDebugSpy).toHaveBeenCalledWith(
-                expect.stringContaining('already shutting down or stopped'),
+            expect(loggerVerboseSpy).toHaveBeenCalledWith(
+                expect.stringContaining('already shutting down'),
             );
 
-            loggerDebugSpy.mockRestore();
+            loggerVerboseSpy.mockRestore();
         });
     });
 });

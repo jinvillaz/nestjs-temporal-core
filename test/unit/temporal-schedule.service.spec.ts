@@ -1344,5 +1344,112 @@ describe('TemporalScheduleService', () => {
             logSpy.mockRestore();
             jest.unmock('@temporalio/client');
         });
+
+        it('should handle non-Error thrown in inner catch of initializeScheduleClient', async () => {
+            // Create a mock client without schedule property
+            const mockClientNoSchedule = {
+                schedule: undefined,
+                connection: {
+                    address: 'localhost:7233',
+                },
+            };
+
+            const module: TestingModule = await Test.createTestingModule({
+                providers: [
+                    TemporalScheduleService,
+                    {
+                        provide: TEMPORAL_MODULE_OPTIONS,
+                        useValue: mockOptions,
+                    },
+                    {
+                        provide: TEMPORAL_CLIENT,
+                        useValue: mockClientNoSchedule,
+                    },
+                    {
+                        provide: DiscoveryService,
+                        useValue: {
+                            getProviders: jest.fn().mockReturnValue([]),
+                        },
+                    },
+                    {
+                        provide: TemporalMetadataAccessor,
+                        useValue: {
+                            isScheduledWorkflow: jest.fn(),
+                        },
+                    },
+                ],
+            }).compile();
+
+            const errorService = module.get<TemporalScheduleService>(TemporalScheduleService);
+
+            // Mock ScheduleClient to throw a non-Error (string)
+            const ScheduleClientModule = await import('@temporalio/client');
+            const originalScheduleClient = ScheduleClientModule.ScheduleClient;
+
+            // Suppress logger.warn to avoid noise
+            const loggerWarnSpy = jest
+                .spyOn((errorService as any).logger, 'warn')
+                .mockImplementation();
+
+            // The ScheduleClient constructor call will fail, triggering inner catch
+            await errorService.onModuleInit();
+
+            // Should handle gracefully
+            expect(errorService.getScheduleStats()).toBeDefined();
+
+            loggerWarnSpy.mockRestore();
+        });
+
+        it('should handle non-Error thrown in outer catch of initializeScheduleClient', async () => {
+            // Create a client that throws when accessing schedule property
+            const throwingClient = {
+                get schedule() {
+                    throw 'String error thrown'; // Non-Error throw
+                },
+                connection: {
+                    address: 'localhost:7233',
+                },
+            };
+
+            const module: TestingModule = await Test.createTestingModule({
+                providers: [
+                    TemporalScheduleService,
+                    {
+                        provide: TEMPORAL_MODULE_OPTIONS,
+                        useValue: mockOptions,
+                    },
+                    {
+                        provide: TEMPORAL_CLIENT,
+                        useValue: throwingClient,
+                    },
+                    {
+                        provide: DiscoveryService,
+                        useValue: {
+                            getProviders: jest.fn().mockReturnValue([]),
+                        },
+                    },
+                    {
+                        provide: TemporalMetadataAccessor,
+                        useValue: {
+                            isScheduledWorkflow: jest.fn(),
+                        },
+                    },
+                ],
+            }).compile();
+
+            const errorService = module.get<TemporalScheduleService>(TemporalScheduleService);
+
+            // Suppress logger.error to avoid noise
+            const loggerErrorSpy = jest
+                .spyOn((errorService as any).logger, 'error')
+                .mockImplementation();
+
+            await errorService.onModuleInit();
+
+            // Should handle gracefully
+            expect(errorService.getScheduleStats()).toBeDefined();
+
+            loggerErrorSpy.mockRestore();
+        });
     });
 });

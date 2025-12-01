@@ -1389,5 +1389,44 @@ describe('TemporalMetadataAccessor', () => {
             expect(result.warnings).toContain('No activity methods found in class');
             expect(result.methodCount).toBe(0);
         });
+
+        it('should handle Reflect.getMetadata error in getActivityMethodOptions', () => {
+            const originalGetMetadata = Reflect.getMetadata;
+
+            // Create a target that throws when accessed
+            const faultyTarget = {};
+            Object.defineProperty(faultyTarget, 'constructor', {
+                get() {
+                    throw new Error('Constructor access error');
+                },
+            });
+
+            // Mock Reflect.getMetadata to throw
+            Reflect.getMetadata = jest.fn().mockImplementation(() => {
+                throw new Error('Metadata access error');
+            });
+
+            const result = service.getActivityMethodOptions(faultyTarget, 'testMethod');
+
+            expect(result).toBeNull();
+
+            Reflect.getMetadata = originalGetMetadata;
+        });
+
+        it('should handle getActivityMethodOptions with proxy that throws', () => {
+            const throwingProxy = new Proxy(
+                {},
+                {
+                    get() {
+                        throw new Error('Proxy access error');
+                    },
+                },
+            );
+
+            // This should handle the error gracefully
+            const result = service.getActivityMethodOptions(throwingProxy, 'test');
+
+            expect(result).toBeNull();
+        });
     });
 });

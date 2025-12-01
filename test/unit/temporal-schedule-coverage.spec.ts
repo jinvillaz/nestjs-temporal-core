@@ -70,8 +70,8 @@ describe('TemporalScheduleService - Coverage Improvements', () => {
 
     describe('discoverAndRegisterSchedules error path (lines 156-158)', () => {
         it('should handle discoverAndRegisterSchedules error - Error instance', async () => {
-            // Spy on the debug logger to make it throw
-            jest.spyOn((service as any).logger, 'debug').mockImplementation(() => {
+            // Spy on the verbose logger to make it throw
+            jest.spyOn((service as any).logger, 'verbose').mockImplementation(() => {
                 throw new Error('Discovery failed');
             });
 
@@ -84,7 +84,7 @@ describe('TemporalScheduleService - Coverage Improvements', () => {
             expect(result.errors).toEqual([{ schedule: 'discovery', error: 'Discovery failed' }]);
             expect(result.duration).toBeGreaterThanOrEqual(0);
             expect(loggerSpy).toHaveBeenCalledWith(
-                'Failed to discover schedules: Discovery failed',
+                'Failed to discover schedules',
                 expect.any(Error),
             );
 
@@ -92,8 +92,8 @@ describe('TemporalScheduleService - Coverage Improvements', () => {
         });
 
         it('should handle discoverAndRegisterSchedules error - non-Error', async () => {
-            // Spy on the debug logger to make it throw a non-Error
-            jest.spyOn((service as any).logger, 'debug').mockImplementation(() => {
+            // Spy on the verbose logger to make it throw a non-Error
+            jest.spyOn((service as any).logger, 'verbose').mockImplementation(() => {
                 throw 'String error';
             });
 
@@ -103,10 +103,10 @@ describe('TemporalScheduleService - Coverage Improvements', () => {
 
             expect(result.success).toBe(false);
             expect(result.discoveredCount).toBe(0);
-            expect(result.errors).toEqual([{ schedule: 'discovery', error: 'Unknown error' }]);
+            expect(result.errors).toEqual([{ schedule: 'discovery', error: 'String error' }]);
             expect(result.duration).toBeGreaterThanOrEqual(0);
             expect(loggerSpy).toHaveBeenCalledWith(
-                'Failed to discover schedules: Unknown error',
+                'Failed to discover schedules',
                 'String error',
             );
 
@@ -114,7 +114,7 @@ describe('TemporalScheduleService - Coverage Improvements', () => {
         });
 
         it('should handle discoverAndRegisterSchedules error - null', async () => {
-            jest.spyOn((service as any).logger, 'debug').mockImplementation(() => {
+            jest.spyOn((service as any).logger, 'verbose').mockImplementation(() => {
                 throw null;
             });
 
@@ -126,7 +126,7 @@ describe('TemporalScheduleService - Coverage Improvements', () => {
             expect(result.discoveredCount).toBe(0);
             expect(result.errors).toEqual([{ schedule: 'discovery', error: 'Unknown error' }]);
             expect(loggerSpy).toHaveBeenCalledWith(
-                'Failed to discover schedules: Unknown error',
+                'Failed to discover schedules',
                 null,
             );
 
@@ -134,7 +134,7 @@ describe('TemporalScheduleService - Coverage Improvements', () => {
         });
 
         it('should handle discoverAndRegisterSchedules error - undefined', async () => {
-            jest.spyOn((service as any).logger, 'debug').mockImplementation(() => {
+            jest.spyOn((service as any).logger, 'verbose').mockImplementation(() => {
                 throw undefined;
             });
 
@@ -146,7 +146,7 @@ describe('TemporalScheduleService - Coverage Improvements', () => {
             expect(result.discoveredCount).toBe(0);
             expect(result.errors).toEqual([{ schedule: 'discovery', error: 'Unknown error' }]);
             expect(loggerSpy).toHaveBeenCalledWith(
-                'Failed to discover schedules: Unknown error',
+                'Failed to discover schedules',
                 undefined,
             );
 
@@ -154,7 +154,7 @@ describe('TemporalScheduleService - Coverage Improvements', () => {
         });
 
         it('should handle discoverAndRegisterSchedules error - object', async () => {
-            jest.spyOn((service as any).logger, 'debug').mockImplementation(() => {
+            jest.spyOn((service as any).logger, 'verbose').mockImplementation(() => {
                 throw { code: 'ERR_DISCOVERY' };
             });
 
@@ -166,7 +166,7 @@ describe('TemporalScheduleService - Coverage Improvements', () => {
             expect(result.discoveredCount).toBe(0);
             expect(result.errors).toEqual([{ schedule: 'discovery', error: 'Unknown error' }]);
             expect(loggerSpy).toHaveBeenCalledWith(
-                'Failed to discover schedules: Unknown error',
+                'Failed to discover schedules',
                 expect.objectContaining({ code: 'ERR_DISCOVERY' }),
             );
 
@@ -367,7 +367,7 @@ describe('TemporalScheduleService - Coverage Improvements', () => {
             await service.onModuleDestroy();
 
             expect(loggerSpy).toHaveBeenCalledWith(
-                'Error during schedule service shutdown: Clear failed',
+                'Error during schedule service shutdown',
                 expect.any(Error),
             );
 
@@ -384,7 +384,7 @@ describe('TemporalScheduleService - Coverage Improvements', () => {
             await service.onModuleDestroy();
 
             expect(loggerSpy).toHaveBeenCalledWith(
-                'Error during schedule service shutdown: Unknown error',
+                'Error during schedule service shutdown',
                 'String error',
             );
 
@@ -421,7 +421,7 @@ describe('TemporalScheduleService - Coverage Improvements', () => {
             expect(result.success).toBe(false);
             expect(result.error).toBeInstanceOf(Error);
             expect(loggerSpy).toHaveBeenCalledWith(
-                'Failed to create schedule test-schedule: Create failed',
+                "Failed to create schedule 'test-schedule'",
                 expect.any(Error),
             );
 
@@ -447,10 +447,10 @@ describe('TemporalScheduleService - Coverage Improvements', () => {
             expect(result.success).toBe(false);
             expect(result.error).toBeInstanceOf(Error);
             if (result.error) {
-                expect(result.error.message).toBe('Unknown error');
+                expect(result.error.message).toBe('String error');
             }
             expect(loggerSpy).toHaveBeenCalledWith(
-                'Failed to create schedule test-schedule: Unknown error',
+                "Failed to create schedule 'test-schedule'",
                 'String error',
             );
 
@@ -470,7 +470,7 @@ describe('TemporalScheduleService - Coverage Improvements', () => {
             expect(result.success).toBe(false);
             expect(result.error).toBeInstanceOf(Error);
             expect(loggerSpy).toHaveBeenCalledWith(
-                'Failed to get schedule test-schedule: Get handle failed',
+                "Failed to get schedule 'test-schedule'",
                 expect.any(Error),
             );
 
@@ -490,10 +490,10 @@ describe('TemporalScheduleService - Coverage Improvements', () => {
             expect(result.success).toBe(false);
             expect(result.error).toBeInstanceOf(Error);
             if (result.error) {
-                expect(result.error.message).toBe('Unknown error');
+                expect(result.error.message).toBe('String error');
             }
             expect(loggerSpy).toHaveBeenCalledWith(
-                'Failed to get schedule test-schedule: Unknown error',
+                "Failed to get schedule 'test-schedule'",
                 'String error',
             );
 
@@ -729,7 +729,7 @@ describe('TemporalScheduleService - Coverage Improvements', () => {
 
             // Line 62: error instanceof Error ? error.message : 'Unknown error'
             expect(loggerSpy).toHaveBeenCalledWith(
-                'Failed to initialize Temporal Schedule Service: Unknown error',
+                'Failed to initialize Temporal Schedule Service: Non-error exception',
                 'Non-error exception',
             );
 

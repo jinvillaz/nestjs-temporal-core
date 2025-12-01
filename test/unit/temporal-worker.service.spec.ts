@@ -298,8 +298,9 @@ describe('TemporalWorkerManagerService', () => {
             await service.startWorker();
             await new Promise((resolve) => setTimeout(resolve, 600));
 
+            // Mock the worker state to be STOPPING
             mockWorker.getState = jest.fn().mockReturnValue('STOPPING');
-            const loggerSpy = jest.spyOn((service as any).logger, 'info').mockImplementation();
+            const loggerSpy = jest.spyOn((service as any).logger, 'verbose').mockImplementation();
 
             await service.stopWorker();
 
@@ -316,7 +317,7 @@ describe('TemporalWorkerManagerService', () => {
             await new Promise((resolve) => setTimeout(resolve, 600));
 
             mockWorker.getState = jest.fn().mockReturnValue('DRAINING');
-            const loggerSpy = jest.spyOn((service as any).logger, 'info').mockImplementation();
+            const loggerSpy = jest.spyOn((service as any).logger, 'verbose').mockImplementation();
 
             await service.stopWorker();
 
@@ -333,7 +334,7 @@ describe('TemporalWorkerManagerService', () => {
             await new Promise((resolve) => setTimeout(resolve, 600));
 
             mockWorker.getState = jest.fn().mockReturnValue('DRAINED');
-            const loggerSpy = jest.spyOn((service as any).logger, 'info').mockImplementation();
+            const loggerSpy = jest.spyOn((service as any).logger, 'verbose').mockImplementation();
 
             await service.stopWorker();
 
@@ -350,7 +351,7 @@ describe('TemporalWorkerManagerService', () => {
             await new Promise((resolve) => setTimeout(resolve, 600));
 
             mockWorker.getState = jest.fn().mockReturnValue('STOPPED');
-            const loggerSpy = jest.spyOn((service as any).logger, 'debug').mockImplementation();
+            const loggerSpy = jest.spyOn((service as any).logger, 'verbose').mockImplementation();
 
             await service.stopWorker();
 
@@ -1871,7 +1872,7 @@ describe('TemporalWorkerManagerService', () => {
             await testService.onModuleInit();
 
             expect(loggerSpy).toHaveBeenCalledWith(
-                expect.stringContaining('connection failures are allowed'),
+                'Continuing without worker (connection failures allowed)',
             );
             loggerSpy.mockRestore();
         });
@@ -2526,13 +2527,11 @@ describe('TemporalWorkerManagerService', () => {
         it('should skip stopping a worker that is not running', async () => {
             await service.onModuleInit();
 
-            const loggerSpy = jest.spyOn((service as any).logger, 'debug').mockImplementation();
+            const loggerSpy = jest.spyOn((service as any).logger, 'verbose').mockImplementation();
 
             await service.stopWorkerByTaskQueue('queue-1');
 
-            expect(loggerSpy).toHaveBeenCalledWith(
-                expect.stringContaining("Worker for 'queue-1' is not running"),
-            );
+            expect(loggerSpy).toHaveBeenCalledWith("Worker 'queue-1' is not running");
             loggerSpy.mockRestore();
         });
 
@@ -2545,7 +2544,7 @@ describe('TemporalWorkerManagerService', () => {
             await service.stopWorkerByTaskQueue('queue-1');
 
             expect(loggerSpy).toHaveBeenCalledWith(
-                expect.stringContaining("Worker for 'queue-1' stopped successfully"),
+                expect.stringContaining("Worker 'queue-1' stopped (uptime:"),
             );
             loggerSpy.mockRestore();
         });
@@ -2564,7 +2563,7 @@ describe('TemporalWorkerManagerService', () => {
             await service.stopWorkerByTaskQueue('queue-1');
 
             expect(loggerSpy).toHaveBeenCalledWith(
-                expect.stringContaining("Error while stopping worker for 'queue-1'"),
+                "Error stopping worker 'queue-1'",
                 shutdownError,
             );
             loggerSpy.mockRestore();
@@ -2698,10 +2697,7 @@ describe('TemporalWorkerManagerService', () => {
             await service.onModuleDestroy();
 
             expect(loggerSpy).toHaveBeenCalledWith(
-                expect.stringContaining(
-                    "Unexpected error shutting down worker 'queue-1': Shutdown failed",
-                ),
-                expect.anything(), // Stack trace or undefined
+                "Unexpected error shutting down worker 'queue-1': Shutdown failed",
             );
             loggerSpy.mockRestore();
         });
@@ -3257,13 +3253,13 @@ describe('TemporalWorkerManagerService', () => {
             workerInstance.worker = errorWorker;
 
             const loggerSpy = jest
-                .spyOn((multiService as any).logger, 'debug')
+                .spyOn((multiService as any).logger, 'verbose')
                 .mockImplementation();
 
             await multiService.stopWorkerByTaskQueue('test-queue-edge');
 
             expect(loggerSpy).toHaveBeenCalledWith(
-                expect.stringContaining('already shutting down or stopped'),
+                expect.stringContaining('already shutting down'),
             );
             expect(workerInstance.isRunning).toBe(false);
             loggerSpy.mockRestore();
@@ -3318,7 +3314,7 @@ describe('TemporalWorkerManagerService', () => {
             await multiService.stopWorkerByTaskQueue('test-queue-unexpected');
 
             expect(loggerSpy).toHaveBeenCalledWith(
-                expect.stringContaining("Error while stopping worker for 'test-queue-unexpected'"),
+                "Error stopping worker 'test-queue-unexpected'",
                 expect.any(Error),
             );
             expect(workerInstance.isRunning).toBe(false);
